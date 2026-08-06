@@ -934,8 +934,8 @@ def rl_grpo_qwen3_5_9b_varlen() -> Controller.Config:
         trainer=PolicyTrainer.Config(
             optimizer=default_adamw(lr=1e-6),
             lr_scheduler=LRSchedulersContainer.Config(
-                warmup_steps=2,
-                decay_type="linear",
+                warmup_steps=0,
+                min_lr_factor=1.0,
             ),
             training=TrainingConfig(dtype="bfloat16"),
             parallelism=ParallelismConfig(
@@ -1014,8 +1014,8 @@ def rl_grpo_qwen3_5_debug_varlen() -> Controller.Config:
         trainer=PolicyTrainer.Config(
             optimizer=default_adamw(lr=1e-6),
             lr_scheduler=LRSchedulersContainer.Config(
-                warmup_steps=2,
-                decay_type="linear",
+                warmup_steps=0,
+                min_lr_factor=1.0,
             ),
             training=TrainingConfig(dtype="bfloat16"),
             parallelism=ParallelismConfig(
