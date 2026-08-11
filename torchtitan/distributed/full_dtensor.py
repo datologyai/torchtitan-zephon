@@ -21,10 +21,10 @@ import torch
 import torch.nn as nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import DataParallelMeshDims
-from torch.distributed.tensor import DTensor, Replicate, Shard
-from torch.distributed.tensor.placement_types import Placement
+from torch.distributed.tensor import DTensor, Replicate
 
-from torchtitan.distributed.parallel_dims import ParallelDims
+from torchtitan.distributed.parallel_dims import ParallelDims, SpmdLayout
+from torchtitan.protocols.sharding import resolve_placements
 
 
 def validate_config(
@@ -130,38 +130,29 @@ def parallelize_inputs(
     inputs: torch.Tensor,
     labels: torch.Tensor,
     extra_kwargs: dict[str, Any],
+    input_sharding: dict[str, SpmdLayout],
 ) -> tuple[DTensor, DTensor, dict[str, Any]]:
-    """Wrap ``inputs``, ``labels``, and tensor ``extra_kwargs`` as DTensors.
+    """Wrap named tensors as DTensors using per-name layouts from input_sharding.
 
-    Placements on the dense storage mesh: DP -> Shard(0), CP -> Shard(1),
-    TP -> Replicate. Inputs are assumed already sharded; this only
-    re-wraps via ``from_local``.
+    Inputs are assumed already sharded; this only re-wraps via ``from_local``.
+    A tensor without an entry in ``input_sharding`` is fully replicated; a
+    non-tensor kwarg (e.g. a ``BlockMask``) passes through unchanged.
     """
     mesh = parallel_dims.get_activated_mesh(_DENSE_STORAGE_AXES)
-    assert mesh is not None
-    assert mesh.mesh_dim_names is not None
-    input_shardings: dict[str, Placement] = {}
-    if parallel_dims.dp_replicate_enabled:
-        input_shardings["dp_replicate"] = Shard(0)
-    if parallel_dims.dp_shard_enabled:
-        input_shardings["dp_shard"] = Shard(0)
-    if parallel_dims.cp_enabled:
-        input_shardings["cp"] = Shard(1)
-    placements: list[Placement] = [
-        input_shardings.get(name, Replicate()) for name in mesh.mesh_dim_names
-    ]
+    assert mesh is not None and mesh.mesh_dim_names is not None
+    replicate = [Replicate()] * len(mesh.mesh_dim_names)
 
-    new_extra_kwargs: dict[str, Any] = {
-        k: (
-            DTensor.from_local(v, mesh, placements)
-            if isinstance(v, torch.Tensor) and not isinstance(v, DTensor)
-            else v
-        )
-        for k, v in extra_kwargs.items()
-    }
+    wrapped: dict[str, Any] = {}
+    for name, value in {"input": inputs, "labels": labels, **extra_kwargs}.items():
+        if not isinstance(value, torch.Tensor) or isinstance(value, DTensor):
+            wrapped[name] = value
+            continue
+        layout = input_sharding.get(name)
+        placements = list(resolve_placements(layout, mesh)) if layout else replicate
+        wrapped[name] = DTensor.from_local(value, mesh, placements)
 
     return (
-        DTensor.from_local(inputs, mesh, placements),
-        DTensor.from_local(labels, mesh, placements),
-        new_extra_kwargs,
+        wrapped["input"],
+        wrapped["labels"],
+        {k: wrapped[k] for k in extra_kwargs},
     )
