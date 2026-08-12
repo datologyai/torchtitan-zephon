@@ -173,10 +173,13 @@ def spmd_validate_redistributions(sharding_config: Any) -> None:
     """Validate that SPMD redistributions fit the current runtime helper.
 
     ``spmd_redistribute_per_axis`` can issue at most one single-axis
-    collective for a src/dst layout pair. It does not implement multi-axis
-    moves, and it cannot express unshard/reshard reorderings such as
-    ``PartitionSpec((DP, CP)) -> PartitionSpec((CP, DP))`` where per-axis
-    shard types are unchanged but global shard order changes.
+    collective per changed axis; a multi-axis move is only expressible when
+    every changed axis is a pure reduction (Partial -> Invariant/Replicate),
+    in which case the sequential all-reduces are order-independent. It does
+    not implement multi-axis shard moves, and it cannot express
+    unshard/reshard reorderings such as ``PartitionSpec((DP, CP)) ->
+    PartitionSpec((CP, DP))`` where per-axis shard types are unchanged but
+    global shard order changes.
 
     TODO(pianpwk): this is transitional code while ShardingConfig-based
     redistributions are written in src/dst DTensor-style placements.
@@ -210,7 +213,7 @@ def spmd_validate_redistributions(sharding_config: Any) -> None:
         *,
         name: str,
     ) -> None:
-        """Validate a SPMD redistribution is expressible with one-axis collective."""
+        """Validate a SPMD redistribution is expressible with per-axis collectives."""
         # 1) Checks based on per_axis_spmd_types(), that only one axis mismatches.
         # Store the changed_axes so we know what to look for in PartitionSpec.
         src_types = src.per_axis_spmd_types()
@@ -227,12 +230,32 @@ def spmd_validate_redistributions(sharding_config: Any) -> None:
             if src_types.get(axis_name) != dst_types.get(axis_name)
         ]
         if len(changed_axes) > 1:
-            raise ValueError(
-                f"{name}: SpmdLayout-based redistribution changes multiple mesh "
-                f"axes ({sorted(axis.value for axis in changed_axes)}). "
-                "spmd_redistribute_per_axis only supports one single-axis "
-                "redistribution."
-            )
+            # Multiple changed axes are only expressible when every change is
+            # a pure reduction (Partial -> Invariant/Replicate): sequential
+            # all-reduces over distinct mesh axes are order-independent and
+            # semantics-preserving, with per-axis identity (I) or all-reduce
+            # (R) backward. Shard (V/S) moves or shard-order changes remain
+            # unsupported and are rejected below.
+            non_reductions = [
+                axis_name
+                for axis_name in changed_axes
+                if not (
+                    src_types.get(axis_name) == spmd.P
+                    and dst_types.get(axis_name) in (spmd.I, spmd.R)
+                )
+            ]
+            if (
+                non_reductions
+                or src.partition_spec is not None
+                or dst.partition_spec is not None
+            ):
+                raise ValueError(
+                    f"{name}: SpmdLayout-based redistribution changes multiple mesh "
+                    f"axes ({sorted(axis.value for axis in changed_axes)}). "
+                    "Only pure Partial->Invariant/Replicate multi-axis moves "
+                    "are supported by spmd_redistribute_per_axis."
+                )
+            return
         if changed_axes and (
             src_types[changed_axes[0]] is spmd.V or dst_types[changed_axes[0]] is spmd.V
         ):
