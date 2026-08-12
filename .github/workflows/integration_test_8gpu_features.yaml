@@ -12,7 +12,7 @@ on:
     paths-ignore:
       - 'torchtitan/experiments/**'
   schedule:
-    # Runs every 6 hours
+    # Run every 6 hours
     - cron: '0 */6 * * *'
 
 concurrency:
