@@ -30,7 +30,7 @@ jobs:
   build-test:
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
-      runner: l-x86aavx2-29-113-a10g  # 1 GPU runner
+      runner: mt-l-x86aavx2-29-113-a10g  # 1 GPU runner
       gpu-arch-type: cuda
       gpu-arch-version: "13.0"
       docker-image: torchtitan-ubuntu-22.04-clang12
