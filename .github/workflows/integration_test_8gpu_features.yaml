@@ -150,7 +150,7 @@ jobs:
           --import-result="${MOE_LOSS_FILE}" --assert-equal --steps=100
         rm -rf $RUNNER_TEMP/artifacts-to-be-uploaded/*
 
-        python -m tests.integration_tests.run_tests --gpu_arch_type ${{ matrix.gpu-arch-type }} --test_suite features $RUNNER_TEMP/artifacts-to-be-uploaded --ngpu 8
+        python -m tests.integration_tests.run_tests --gpu_arch_type ${{ matrix.gpu-arch-type }} --test_suite features_real_pg $RUNNER_TEMP/artifacts-to-be-uploaded --ngpu 8
 
         # Cleanup the checkpoints so that we don't waste network bandwidth and time.
         rm -rf $RUNNER_TEMP/artifacts-to-be-uploaded/*/checkpoint

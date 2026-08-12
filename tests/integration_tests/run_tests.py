@@ -15,13 +15,17 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from torchtitan.tools.logging import logger
 
 from tests.integration_tests import OverrideDefinitions
-from tests.integration_tests.features import build_features_test_list
+from tests.integration_tests.features import (
+    build_fake_pg_features_test_list,
+    build_real_pg_features_test_list,
+)
 from tests.integration_tests.h100 import build_h100_tests_list
 from tests.integration_tests.models import build_model_tests_list
 
 
 _TEST_SUITES_FUNCTION = {
-    "features": build_features_test_list,
+    "features_fake_pg": build_fake_pg_features_test_list,
+    "features_real_pg": build_real_pg_features_test_list,
     "models": build_model_tests_list,
     "h100": build_h100_tests_list,
 }
@@ -110,6 +114,7 @@ def run_single_test(
     # ``gpu_ids`` is set only in parallel mode; sequential runs leave the
     # child process to use all visible GPUs.
     gpu_ids: list[int] | None = None,
+    comm_mode: str | None = None,
 ):
     # run_test supports sequence of tests.
     test_name = test_flavor.test_name
@@ -134,6 +139,8 @@ def run_single_test(
             cmd += f"MODULE={module} "
         if config is not None:
             cmd += f"CONFIG={config} "
+        if comm_mode is not None:
+            cmd += f"COMM_MODE={comm_mode} "
         cmd += (
             f"{gpu_env_prefix}NGPU={test_flavor.ngpu} LOG_RANK={all_ranks} "
             f"./run_train.sh"
@@ -145,6 +152,10 @@ def run_single_test(
         cmd += " " + dump_folder_arg
         if override_arg:
             cmd += " " + " ".join(override_arg)
+        if comm_mode is not None and not any(
+            arg.startswith("activation-checkpoint:") for arg in override_arg
+        ):
+            cmd += " activation-checkpoint:none"
 
         start_ts = time.strftime("%Y-%m-%d %H:%M:%S")
         result = _run_cmd(cmd, timeout=test_flavor.timeout)
@@ -182,6 +193,7 @@ def _filter_tests(
 
     Returns (runnable, skipped_due_to_ngpu).
     """
+    comm_mode = getattr(args, "comm_mode", None)
     exclude_set = set()
     if hasattr(args, "exclude") and args.exclude:
         exclude_set = {name.strip() for name in args.exclude.split(",")}
@@ -198,7 +210,7 @@ def _filter_tests(
             and test_flavor.skip_rocm_test
         ):
             continue
-        if args.ngpu < test_flavor.ngpu:
+        if comm_mode is None and args.ngpu < test_flavor.ngpu:
             skipped_ngpu.append(test_flavor)
             continue
         runnable.append(test_flavor)
@@ -222,22 +234,27 @@ def run_tests(
 
     failed_tests: list[tuple[str, str]] = []
 
+    comm_mode = getattr(args, "comm_mode", None)
+
+    def physical_ngpu(test_flavor: OverrideDefinitions) -> int:
+        return 1 if comm_mode is not None else test_flavor.ngpu
+
     if parallel and runnable:
         # Schedule tests concurrently, packing them onto a fixed pool of
-        # physical GPUs. A test can run as soon as `test_flavor.ngpu` GPUs are
-        # free; the sum of in-flight test ngpu never exceeds `args.ngpu`.
+        # physical GPUs. Fake PG tests consume one physical GPU while retaining
+        # test_flavor.ngpu as the simulated world size.
         pool = GPUPool(args.ngpu)
         # Submit largest-first so the very first wave packs efficiently and
         # avoids head-of-line blocking by an oversized test arriving late.
         # NOTE: this only deterministically orders the *first* batch; once
         # workers start finishing at different times, subsequent acquisition
         # order is driven by completion times, not by ``ngpu``.
-        scheduled = sorted(runnable, key=lambda t: -t.ngpu)
+        scheduled = sorted(runnable, key=lambda t: -physical_ngpu(t))
         # Worst case: every test wants 1 GPU and runs in parallel.
         max_workers = max(1, min(len(scheduled), args.ngpu))
 
         def _runner(test_flavor: OverrideDefinitions) -> None:
-            gpus = pool.acquire(test_flavor.ngpu)
+            gpus = pool.acquire(physical_ngpu(test_flavor))
             logger.info(
                 f"[parallel] {test_flavor.test_name}: acquired GPUs {gpus} "
                 f"(ngpu={test_flavor.ngpu})"
@@ -249,6 +266,7 @@ def run_tests(
                     module,
                     config,
                     gpu_ids=gpus,
+                    comm_mode=comm_mode,
                 )
             finally:
                 pool.release(gpus)
@@ -268,7 +286,13 @@ def run_tests(
     else:
         for test_flavor in runnable:
             try:
-                run_single_test(test_flavor, args.output_dir, module, config)
+                run_single_test(
+                    test_flavor,
+                    args.output_dir,
+                    module,
+                    config,
+                    comm_mode=comm_mode,
+                )
             except Exception as e:
                 logger.error(str(e))
                 failed_tests.append((test_flavor.test_name, str(e)))
@@ -310,9 +334,9 @@ def main():
     )
     parser.add_argument(
         "--test_suite",
-        default="features",
-        choices=["features", "models", "h100"],
-        help="Which test suite to run. If not specified, torchtitan composability tests will be run",
+        default="features_fake_pg",
+        choices=["features_fake_pg", "features_real_pg", "models", "h100"],
+        help="Which test suite to run.",
     )
     parser.add_argument(
         "--module",
@@ -349,6 +373,8 @@ def main():
         "Use --no-parallel to force sequential execution (default: parallel).",
     )
     args = parser.parse_args()
+
+    args.comm_mode = "fake_backend" if args.test_suite == "features_fake_pg" else None
 
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)

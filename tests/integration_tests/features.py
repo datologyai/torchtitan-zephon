@@ -7,11 +7,13 @@
 
 import dataclasses
 import os
+import shlex
+from collections.abc import Sequence
 
 from tests.integration_tests import OverrideDefinitions
 
 
-def _is_pp_only(variant: tuple[str, ...], ngpu: int) -> bool:
+def _is_pp_only(variant: Sequence[str], ngpu: int) -> bool:
     """True when the variant has PP > 1 and no other SPMD parallelism > 1.
 
     SPMD backends require at least one SPMD axis > 1; PP-only runs collapse
@@ -49,7 +51,7 @@ def _is_pp_only(variant: tuple[str, ...], ngpu: int) -> bool:
     )
 
 
-def _supports_spmd_typechecking(test_name: str, variant: tuple[str, ...]) -> bool:
+def _supports_spmd_typechecking(test_name: str, variant: Sequence[str]) -> bool:
     """List of tests/variants to test spmd_types backend, but without typechecking."""
     unsupported_tests = [
         # Compile is not compatible with SPMD typechecking yet.
@@ -694,3 +696,60 @@ def build_features_test_list() -> list[OverrideDefinitions]:
     return [
         *[_enable_spmd_backend(t, "spmd_types") for t in integration_tests_flavors],
     ]
+
+
+def _requires_real_pg(test: OverrideDefinitions) -> bool:
+    """Return whether CLI overrides require communication between real ranks."""
+    for variant in test.override_args:
+        cli_args = [
+            cli_arg for override in variant for cli_arg in shlex.split(override)
+        ]
+
+        # Checkpoint tests require rank-local shards, metadata coordination,
+        # save/load, and resharding. Fake PG cannot validate these semantics.
+        if (
+            "--checkpoint.enable" in cli_args
+            or "--checkpoint.create_seed_checkpoint" in cli_args
+        ):
+            return True
+
+        # AC does not fundamentally require a real PG, but FSDP backward
+        # recompute currently hits shard/storage shape mismatches with fake
+        # collectives. Disabling AC would stop testing the intended feature.
+        if any(
+            cli_arg.startswith("activation-checkpoint:")
+            and cli_arg != "activation-checkpoint:none"
+            for cli_arg in cli_args
+        ):
+            return True
+
+        for index, cli_arg in enumerate(cli_args):
+            option, separator, value = cli_arg.partition("=")
+            if option not in {
+                "--parallelism.pipeline_parallel_degree",
+                "--comm.mode",
+            }:
+                continue
+            if not separator:
+                value = cli_args[index + 1]
+
+            # PP needs cross-rank send/recv, while Fake PG point-to-point
+            # operations are no-ops and cannot transfer activations or grads.
+            if option == "--parallelism.pipeline_parallel_degree" and int(value) > 1:
+                return True
+
+            # An explicit non-fake mode must exercise its requested backend,
+            # instead of replacing the system under test with Fake PG.
+            if option == "--comm.mode" and value != "fake_backend":
+                return True
+    return False
+
+
+def build_fake_pg_features_test_list() -> list[OverrideDefinitions]:
+    """Build feature tests that complete a training step with a fake PG."""
+    return [test for test in build_features_test_list() if not _requires_real_pg(test)]
+
+
+def build_real_pg_features_test_list() -> list[OverrideDefinitions]:
+    """Build feature tests that require a real process group."""
+    return [test for test in build_features_test_list() if _requires_real_pg(test)]

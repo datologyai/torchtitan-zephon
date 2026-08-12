@@ -33,7 +33,7 @@ shift
 case "$COMMAND" in
     feature_tests)
         python -m tests.integration_tests.run_tests \
-            --test_suite features \
+            --test_suite features_real_pg \
             --exclude "cpu_offload+opt_in_bwd+TP+DP+CP" \
             --ngpu "$NGPU" \
             "$OUTPUT_DIR"
