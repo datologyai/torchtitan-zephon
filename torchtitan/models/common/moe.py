@@ -16,9 +16,11 @@ from torch.distributed.tensor import DTensor
 
 from torchtitan.distributed.spmd_types import maybe_set_sparse_mesh, spmd_mesh_size
 from torchtitan.distributed.utils import get_spmd_backend
+from torchtitan.models.common.aux_loss import LoggedAuxLoss
 from torchtitan.models.common.feed_forward import FeedForward
 from torchtitan.models.common.linear import Linear
 from torchtitan.protocols.module import Module
+from torchtitan.protocols.sharding import ShardingConfig
 
 from .token_dispatcher import LocalTokenDispatcher
 
@@ -342,6 +344,120 @@ class TokenChoiceTopKRouter(Module):
         )
 
 
+class _SeqwiseCounts(Module):
+    """Per-sequence routing counts and prob sums (DeepSeek-V3 Sec A.2 Eqs 18-20).
+
+    Eq 18: ``f_i = N / (K_r * T) * count_i``.
+    Eq 19: ``s'_i,t = s_i,t / sum_j(s_j,t)``.
+    Eq 20: ``P_i = 1/T * sum_t(s'_i,t)``.
+
+    ``counts_BE`` counts, per sequence, how often each expert is selected
+    (``routing_map_BLE`` scatters the top-k ids into a one-hot map); its
+    column sum equals ``K_r * T`` tokens. ``prob_sums_BE`` sums the
+    normalized scores per sequence. Both are partial over the token dim and
+    are all-reduced at this module's output boundary: the boundary's
+    ``out_src -> out_dst`` redistributes Partial -> Invariant over the
+    token-partition axes (CP, and TP when EP shards tokens over the TP axis).
+    The output concatenates the two ``(B, E)`` tensors into one ``(B, 2E)``
+    tensor because the config-based redistribution layer only supports
+    single-tensor outputs.
+    """
+
+    @dataclass(kw_only=True, slots=True)
+    class Config(Module.Config):
+        top_k: int
+
+    def __init__(self, config: Config):
+        super().__init__()
+        self.top_k = config.top_k
+
+    def forward(
+        self,
+        scores_BLE: torch.Tensor,
+        topk_expert_ids_BLK: torch.Tensor,
+    ) -> torch.Tensor:
+        # The one-hot map is float (not bool) so the counts sum needs no
+        # dtype cast: casting a Partial tensor is non-linear and rejected by
+        # spmd_types typechecking.
+        routing_map_BLE = torch.zeros_like(scores_BLE).scatter_(
+            -1, topk_expert_ids_BLK, 1.0
+        )
+        counts_BE = routing_map_BLE.sum(dim=1)
+        probs_BLE = scores_BLE / scores_BLE.sum(dim=-1, keepdim=True)
+        prob_sums_BE = probs_BLE.sum(dim=1)
+        # Single tensor avoids _redistribute_outputs tuple limitation.
+        return torch.cat([counts_BE, prob_sums_BE], dim=-1)
+
+
+class SeqwiseLoadBalanceLoss(LoggedAuxLoss):
+    """Per-sequence MoE load-balance gradient (DeepSeek-V3 Sec A.2 Eqs 17-20).
+
+    Eq 17: ``L = sum_i f_i * P_i`` per sequence, with ``f_i`` (Eq 18) and
+    ``P_i`` (Eq 20) from ``_SeqwiseCounts``. The gradient reaches the router
+    scores through both the normalized probs (Eq 19) and the top-k score
+    carrier; the one-hot counts are non-differentiable, so ``f_i`` receives no
+    gradient, matching the paper.
+
+    Formula-internal ``1/T`` (Eqs 18/20) is per-sequence and derived from the
+    all-reduced counts (``num_tokens_B``), so it stays CP-correct and
+    varlen-safe regardless of the local tensor shape. The framework
+    normalizes by ``per_step_denominator = global_batch_size`` (``normalize =
+    "sequences"``), i.e. the loss is a mean over the batch's sequences -- the
+    DS-V3 Eq 17 convention -- so ``coeff`` directly sets the aux:CE gradient
+    ratio (a per-token normalization would weaken it by the sequence length).
+    """
+
+    @dataclass(kw_only=True, slots=True)
+    class Config(LoggedAuxLoss.Config):
+        top_k: int
+        # "batch" is this loss's disjoint-ownership mesh: ``_SeqwiseCounts``
+        # all-reduces across the token-partition group, and the metric is
+        # summed over the DP mesh at collection time.
+        reduce_mesh: str = "batch"
+        # Mean over sequences, not tokens: each sequence's loss is already
+        # token-count-normalized inside Eqs 18/20.
+        normalize: Literal["tokens", "sequences", "batch"] = "sequences"
+        # Boundary sharding config for ``_SeqwiseCounts``: the Partial ->
+        # Invariant all-reduce over the token-partition axes (CP, and TP when
+        # EP shards tokens over the TP axis) lands at the child's output
+        # boundary instead of an explicit collective in forward code. Set by
+        # ``set_moe_sharding_config`` before the modules are built; stored
+        # here rather than nested in a counts config so
+        # ``dataclasses.replace`` in ``Config.build`` does not drop it.
+        counts_sharding_config: ShardingConfig | None = None
+
+    def __init__(self, config: Config):
+        super().__init__(config)
+        self.top_k = config.top_k
+        if get_spmd_backend() != "spmd_types":
+            raise ValueError(
+                "SeqwiseLoadBalanceLoss requires --parallelism.spmd_backend "
+                f"spmd_types, got {get_spmd_backend()!r}. The per-sequence "
+                "counts all-reduce relies on spmd_types mesh semantics."
+            )
+        self._seqwise_counts = _SeqwiseCounts.Config(
+            top_k=self.top_k, sharding_config=config.counts_sharding_config
+        ).build()
+
+    def forward(
+        self,
+        topk_scores_BLK: torch.Tensor,
+        scores_BLE: torch.Tensor,
+        topk_expert_ids_BLK: torch.Tensor,
+    ) -> torch.Tensor:
+        combined = self._seqwise_counts(scores_BLE, topk_expert_ids_BLK)
+        # The child boundary already all-reduced Partial -> Invariant on the
+        # token-partition axes (CP, and TP when EP shards tokens over TP).
+        # Split the concatenated (counts, prob_sums) tensor.
+        E = scores_BLE.size(-1)
+        counts_BE, prob_sums_BE = combined[..., :E], combined[..., E:]
+        num_tokens_B = counts_BE.sum(dim=1) / self.top_k
+        f_BE = counts_BE * (E / (self.top_k * num_tokens_B.unsqueeze(1)))
+        p_BE = prob_sums_BE / num_tokens_B.unsqueeze(1)
+        loss_per_seq_B = (f_BE * p_BE).sum(dim=1)
+        return self.inject(loss_per_seq_B.sum(), carrier=topk_scores_BLK)
+
+
 class MoE(Module):
     """Mixture of Experts layer.
 
@@ -368,6 +484,7 @@ class MoE(Module):
         router: TokenChoiceTopKRouter.Config
         load_balance_coeff: float | None = 1e-3
         shared_experts: FeedForward.Config | None = None
+        aux_loss: SeqwiseLoadBalanceLoss.Config | None = None
 
     def __init__(self, config: Config):
         super().__init__()
@@ -378,6 +495,7 @@ class MoE(Module):
         self.shared_experts = (
             config.shared_experts.build() if config.shared_experts is not None else None
         )
+        self.aux_loss = config.aux_loss.build() if config.aux_loss is not None else None
 
         # define fields for auxiliary-loss-free load balancing (https://arxiv.org/abs/2408.15664)
         # NOTE: tokens_per_expert_E is accumulated in the model forward pass.
@@ -424,6 +542,15 @@ class MoE(Module):
             topk_expert_ids_BLK,
             scores_BLE,
         ) = self.router(x_BLD, self.expert_bias_E)
+
+        # The aux-loss gradient must reach the router scores, which produce
+        # the per-expert gating weights.  Injection before the experts consume
+        # the scores means the gradient propagates into the gating network
+        # while the MoE output tensor stays unchanged (PP contract).
+        if self.training and self.aux_loss is not None:
+            topk_scores_BLK = self.aux_loss(
+                topk_scores_BLK, scores_BLE, topk_expert_ids_BLK
+            )
 
         # Build a one-hot routing map (B, L, E) marking the experts each token
         # is routed to. Under TP/SP the router outputs are DTensors sharded on
