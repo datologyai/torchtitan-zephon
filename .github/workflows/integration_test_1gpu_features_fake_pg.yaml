@@ -23,17 +23,29 @@ defaults:
     shell: bash -l -eo pipefail {0}
 
 permissions:
-      id-token: write
-      contents: read
+  id-token: write
+  contents: read
 
 jobs:
-  build-test:
-    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+  set-matrix:
+    if: github.repository_owner == 'pytorch' || github.event_name != 'schedule'
+    uses: ./.github/workflows/set-matrix.yaml
     with:
-      runner: mt-l-x86aavx2-29-113-a10g  # 1 GPU runner
-      gpu-arch-type: cuda
-      gpu-arch-version: "13.0"
-      docker-image: torchtitan-ubuntu-22.04-clang12
+      runner-cuda: mt-l-x86aavx2-29-113-a10g
+      gpu-arch: cuda
+
+  build-test:
+    needs: set-matrix
+    if: ${{ needs.set-matrix.outputs.matrix != '' && fromJSON(needs.set-matrix.outputs.matrix).include[0] != null }}
+    uses: pytorch/test-infra/.github/workflows/linux_job_v3.yml@main
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.set-matrix.outputs.matrix) }}
+    with:
+      runner: ${{ matrix.runner }}
+      gpu-arch-type: ${{ matrix.gpu-arch-type }}
+      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      docker-image: 308535385114.dkr.ecr.us-east-1.amazonaws.com/torchtitan/${{ matrix.docker-image }}:${{ needs.set-matrix.outputs.docker-hash }}
       repository: pytorch/torchtitan
       upload-artifact: outputs
       timeout: 30
@@ -43,17 +55,19 @@ jobs:
         CONDA_ENV=$(conda env list --json | jq -r ".envs | .[-1]")
         conda activate "${CONDA_ENV}"
 
+        export HF_HOME="$RUNNER_TEMP/hf_home"
+        export HF_DATASETS_CACHE="$RUNNER_TEMP/hf_home/datasets"
+
         DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1 || true)
         echo "CUDA driver version: ${DRIVER_VERSION}"
 
         pip config --user set global.progress_bar off
 
         python -m pip install --force-reinstall --pre \
-          torch --index-url https://download.pytorch.org/whl/nightly/cu130
-        USE_CPP=0 python -m pip install --pre torchao --index-url https://download.pytorch.org/whl/nightly/cu130
+          torch --index-url ${{ matrix.index-url }}
+        USE_CPP=0 python -m pip install --pre torchao --index-url ${{ matrix.index-url }}
 
-        sudo mkdir -p "$RUNNER_TEMP/artifacts-to-be-uploaded"
-        sudo chown -R $(id -u):$(id -g) "$RUNNER_TEMP/artifacts-to-be-uploaded"
+        mkdir -p "$RUNNER_TEMP/artifacts-to-be-uploaded"
 
         python -m tests.integration_tests.run_tests \
           --gpu_arch_type cuda \
