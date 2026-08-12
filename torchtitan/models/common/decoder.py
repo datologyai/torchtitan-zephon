@@ -22,6 +22,7 @@ from torchtitan.models.common.attention import (
     get_efficient_causal_mask_mod_for_packed_document,
     VarlenAttention,
 )
+from torchtitan.models.common.aux_loss import LoggedAuxLoss
 from torchtitan.models.common.embedding import Embedding
 from torchtitan.models.common.feed_forward import FeedForward
 from torchtitan.models.common.linear import Linear
@@ -183,6 +184,18 @@ class Decoder(BaseModel):
                         layer_cfg.moe.router._debug_force_load_balance = (
                             debug.moe_force_load_balance
                         )
+
+                # Runtime config fields for aux losses: the per-step
+                # normalization denominator, set before the modules are built.
+                # The mode -> denominator mapping lives on the loss class.
+                for _fqn, aux_loss_cfg, _parent, _attr in self.traverse(
+                    LoggedAuxLoss.Config
+                ):
+                    LoggedAuxLoss.update_from_config(
+                        aux_loss_cfg,  # pyrefly: ignore [bad-argument-type]
+                        global_batch_size=config.training.global_batch_size,
+                        seq_len=config.training.seq_len,
+                    )
 
     # Set by the trainer when ChunkedLossWrapper is used, so lm_head is applied
     # per-chunk inside the loss function instead of in forward().
