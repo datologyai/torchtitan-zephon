@@ -118,7 +118,7 @@ def run_single_test(
     # ``gpu_ids`` is set only in parallel mode; sequential runs leave the
     # child process to use all visible GPUs.
     gpu_ids: list[int] | None = None,
-    comm_mode: str | None = None,
+    use_fake_pg: bool = False,
 ):
     # run_test supports sequence of tests.
     test_name = test_flavor.test_name
@@ -143,8 +143,8 @@ def run_single_test(
             cmd += f"MODULE={module} "
         if config is not None:
             cmd += f"CONFIG={config} "
-        if comm_mode is not None:
-            cmd += f"COMM_MODE={comm_mode} "
+        if use_fake_pg:
+            cmd += "COMM_MODE=fake_backend "
         cmd += (
             f"{gpu_env_prefix}NGPU={test_flavor.ngpu} LOG_RANK={all_ranks} "
             f"./run_train.sh"
@@ -156,7 +156,7 @@ def run_single_test(
         cmd += " " + dump_folder_arg
         if override_arg:
             cmd += " " + " ".join(override_arg)
-        if comm_mode is not None and not any(
+        if use_fake_pg and not any(
             arg.startswith("activation-checkpoint:") for arg in override_arg
         ):
             cmd += " activation-checkpoint:none"
@@ -191,13 +191,15 @@ def run_single_test(
 
 
 def _filter_tests(
-    args, test_list: list[OverrideDefinitions]
+    args,
+    test_list: list[OverrideDefinitions],
+    *,
+    use_fake_pg: bool = False,
 ) -> tuple[list[OverrideDefinitions], list[OverrideDefinitions]]:
     """Filter tests by --test_name / --exclude / disabled / arch / ngpu.
 
     Returns (runnable, skipped_due_to_ngpu).
     """
-    comm_mode = getattr(args, "comm_mode", None)
     exclude_set = set()
     if hasattr(args, "exclude") and args.exclude:
         exclude_set = {name.strip() for name in args.exclude.split(",")}
@@ -214,7 +216,7 @@ def _filter_tests(
             and test_flavor.skip_rocm_test
         ):
             continue
-        if comm_mode is None and args.ngpu < test_flavor.ngpu:
+        if not use_fake_pg and args.ngpu < test_flavor.ngpu:
             skipped_ngpu.append(test_flavor)
             continue
         runnable.append(test_flavor)
@@ -227,9 +229,10 @@ def run_tests(
     module=None,
     config=None,
     parallel: bool = True,
+    use_fake_pg: bool = False,
 ):
     """Run all integration tests to test the core features of TorchTitan."""
-    runnable, skipped_ngpu = _filter_tests(args, test_list)
+    runnable, skipped_ngpu = _filter_tests(args, test_list, use_fake_pg=use_fake_pg)
     for test_flavor in skipped_ngpu:
         logger.info(
             f"Skipping test {test_flavor.test_name} that requires {test_flavor.ngpu} gpus,"
@@ -238,10 +241,8 @@ def run_tests(
 
     failed_tests: list[tuple[str, str]] = []
 
-    comm_mode = getattr(args, "comm_mode", None)
-
     def physical_ngpu(test_flavor: OverrideDefinitions) -> int:
-        return 1 if comm_mode is not None else test_flavor.ngpu
+        return 1 if use_fake_pg else test_flavor.ngpu
 
     if parallel and runnable:
         # Schedule tests concurrently, packing them onto a fixed pool of
@@ -270,7 +271,7 @@ def run_tests(
                     module,
                     config,
                     gpu_ids=gpus,
-                    comm_mode=comm_mode,
+                    use_fake_pg=use_fake_pg,
                 )
             finally:
                 pool.release(gpus)
@@ -295,7 +296,7 @@ def run_tests(
                     args.output_dir,
                     module,
                     config,
-                    comm_mode=comm_mode,
+                    use_fake_pg=use_fake_pg,
                 )
             except Exception as e:
                 logger.error(str(e))
@@ -384,7 +385,7 @@ def main():
     )
     args = parser.parse_args()
 
-    args.comm_mode = "fake_backend" if args.test_suite.endswith("_fake_pg") else None
+    use_fake_pg = args.test_suite.endswith("_fake_pg")
 
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
@@ -396,7 +397,12 @@ def main():
     ), f"Unknown test suite {args.test_suite}"
 
     test_list = _TEST_SUITES_FUNCTION[args.test_suite]()
-    run_tests(args, test_list, parallel=args.parallel)
+    run_tests(
+        args,
+        test_list,
+        parallel=args.parallel,
+        use_fake_pg=use_fake_pg,
+    )
 
 
 if __name__ == "__main__":
