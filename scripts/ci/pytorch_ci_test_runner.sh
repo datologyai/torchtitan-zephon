@@ -18,7 +18,7 @@ usage() {
     echo "Usage: $0 <command>"
     echo ""
     echo "Commands:"
-    echo "  infra_tests     Run infra integration tests"
+    echo "  feature_tests   Run feature integration tests"
     echo "  model_tests     Run model integration tests"
     exit 1
 }
@@ -31,9 +31,9 @@ COMMAND="$1"
 shift
 
 case "$COMMAND" in
-    infra_tests)
+    feature_tests)
         python -m tests.integration_tests.run_tests \
-            --test_suite infra_real_pg \
+            --test_suite features_real_pg \
             --exclude "cpu_offload+opt_in_bwd+TP+DP+CP" \
             --ngpu "$NGPU" \
             "$OUTPUT_DIR"

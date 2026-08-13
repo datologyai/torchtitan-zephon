@@ -131,7 +131,7 @@ else:
     )
 
 
-def build_infra_test_list() -> list[OverrideDefinitions]:
+def build_features_test_list() -> list[OverrideDefinitions]:
     """
     key is the config file name and value is a list of OverrideDefinitions
     that is used to generate variations of integration tests based on the
@@ -697,11 +697,11 @@ def build_infra_test_list() -> list[OverrideDefinitions]:
     ]
 
 
-def build_fake_pg_infra_test_list() -> list[OverrideDefinitions]:
-    """Build infra tests that complete a training step with a fake PG."""
-    return [test for test in build_infra_test_list() if not requires_real_pg(test)]
+def build_fake_pg_features_test_list() -> list[OverrideDefinitions]:
+    """Build feature tests that complete a training step with a fake PG."""
+    return [test for test in build_features_test_list() if not requires_real_pg(test)]
 
 
-def build_real_pg_infra_test_list() -> list[OverrideDefinitions]:
-    """Build infra tests that require a real process group."""
-    return [test for test in build_infra_test_list() if requires_real_pg(test)]
+def build_real_pg_features_test_list() -> list[OverrideDefinitions]:
+    """Build feature tests that require a real process group."""
+    return [test for test in build_features_test_list() if requires_real_pg(test)]

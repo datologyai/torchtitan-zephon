@@ -70,9 +70,9 @@ jobs:
 
         python -m tests.integration_tests.run_tests \
           --gpu_arch_type rocm \
-          --test_suite infra_fake_pg \
+          --test_suite features_fake_pg \
           --ngpu 1 \
-          "$RUNNER_TEMP/artifacts-to-be-uploaded/infra"
+          "$RUNNER_TEMP/artifacts-to-be-uploaded/features"
         python -m tests.integration_tests.run_tests \
           --gpu_arch_type rocm \
           --test_suite models_fake_pg \

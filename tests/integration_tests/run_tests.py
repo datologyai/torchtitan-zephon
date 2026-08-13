@@ -15,11 +15,11 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from torchtitan.tools.logging import logger
 
 from tests.integration_tests import OverrideDefinitions
-from tests.integration_tests.h100 import build_h100_tests_list
-from tests.integration_tests.infra import (
-    build_fake_pg_infra_test_list,
-    build_real_pg_infra_test_list,
+from tests.integration_tests.features import (
+    build_fake_pg_features_test_list,
+    build_real_pg_features_test_list,
 )
+from tests.integration_tests.h100 import build_h100_tests_list
 from tests.integration_tests.models import (
     build_fake_pg_model_tests_list,
     build_real_pg_model_tests_list,
@@ -27,8 +27,8 @@ from tests.integration_tests.models import (
 
 
 _TEST_SUITES_FUNCTION = {
-    "infra_fake_pg": build_fake_pg_infra_test_list,
-    "infra_real_pg": build_real_pg_infra_test_list,
+    "features_fake_pg": build_fake_pg_features_test_list,
+    "features_real_pg": build_real_pg_features_test_list,
     "models_fake_pg": build_fake_pg_model_tests_list,
     "models_real_pg": build_real_pg_model_tests_list,
     "h100": build_h100_tests_list,
@@ -339,10 +339,10 @@ def main():
     )
     parser.add_argument(
         "--test_suite",
-        default="infra_fake_pg",
+        default="features_fake_pg",
         choices=[
-            "infra_fake_pg",
-            "infra_real_pg",
+            "features_fake_pg",
+            "features_real_pg",
             "models_fake_pg",
             "models_real_pg",
             "h100",
