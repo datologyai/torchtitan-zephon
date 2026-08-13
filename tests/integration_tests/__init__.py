@@ -47,16 +47,6 @@ def requires_real_pg(test: OverrideDefinitions) -> bool:
         ):
             return True
 
-        # AC does not fundamentally require a real PG, but FSDP backward
-        # recompute currently hits shard/storage shape mismatches with fake
-        # collectives. Disabling AC would stop testing the intended feature.
-        if any(
-            cli_arg.startswith("activation-checkpoint:")
-            and cli_arg != "activation-checkpoint:none"
-            for cli_arg in cli_args
-        ):
-            return True
-
         for index, cli_arg in enumerate(cli_args):
             option, separator, value = cli_arg.partition("=")
             if option not in {

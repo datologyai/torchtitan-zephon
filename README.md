@@ -4,39 +4,6 @@
 
 #### A PyTorch native platform for training generative AI models
 
-<h4>Test Status</h4>
-
-<table>
-  <thead>
-    <tr>
-      <th>Hardware</th>
-      <th>Status</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>NVIDIA GPU</td>
-      <td>
-        <a href="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_infra.yaml?query=branch%3Amain"><img alt="Infra Tests" src="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_infra.yaml/badge.svg?branch=main"></a>
-        <a href="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_models.yaml?query=branch%3Amain"><img alt="Model Tests" src="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_models.yaml/badge.svg?branch=main"></a>
-        <a href="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_h100.yaml?query=branch%3Amain"><img alt="H100 Integration Tests" src="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_h100.yaml/badge.svg?branch=main"></a>
-      </td>
-    </tr>
-    <tr>
-      <td>AMD GPU</td>
-      <td>
-        <img alt="ROCm Tests Disabled" src="https://img.shields.io/badge/ROCm_Tests-disabled-lightgrey">
-      </td>
-    </tr>
-    <tr>
-      <td>CPU</td>
-      <td>
-        <a href="https://github.com/pytorch/torchtitan/actions/workflows/unit_test_cpu.yaml?query=branch%3Amain"><img alt="CPU Unit Tests" src="https://github.com/pytorch/torchtitan/actions/workflows/unit_test_cpu.yaml/badge.svg?branch=main"></a>
-      </td>
-    </tr>
-  </tbody>
-</table>
-
 [![arXiv](https://img.shields.io/badge/arXiv-2410.06511-b31b1b.svg)](https://arxiv.org/abs/2410.06511)
 [![ICLR](https://img.shields.io/badge/ICLR-2025-violet.svg)](https://iclr.cc/virtual/2025/poster/29620)
 [![forum](https://img.shields.io/badge/pytorch-forum-DE3412.svg)](https://discuss.pytorch.org/c/distributed/torchtitan/44)
@@ -201,6 +168,14 @@ srun torchrun --nnodes 2
 ```
 
 If your gpu count per node is not 8, adjust `--nproc_per_node` in the torchrun command and `#SBATCH --gpus-per-task` in the SBATCH command section.
+
+## Test status
+
+| Hardware | Status |
+| --- | --- |
+| NVIDIA GPU | [![Infra Tests](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_infra.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_infra.yaml?query=branch%3Amain) [![Model Tests](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_models.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_models.yaml?query=branch%3Amain) [![H100 Integration Tests](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_h100.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_h100.yaml?query=branch%3Amain) |
+| AMD GPU | ![ROCm Tests Disabled](https://img.shields.io/badge/ROCm_Tests-disabled-lightgrey) |
+| CPU | [![CPU Unit Tests](https://github.com/pytorch/torchtitan/actions/workflows/unit_test_cpu.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/unit_test_cpu.yaml?query=branch%3Amain) |
 
 
 ## Citation
