@@ -75,7 +75,7 @@ jobs:
         # Stage 1: exact numerics on a real world-size-1 process group. Until
         # the A10G golden is checked in, actual.json is uploaded for review.
         # Guard every feasible model's unsharded 10-step loss and grad norm.
-        python -m tests.integration_tests.numerics \
+        python -m tests.integration_tests.run_numerics \
           --test_suite 1gpu \
           "$RUNNER_TEMP/artifacts-to-be-uploaded/model_numerics"
 
@@ -139,7 +139,7 @@ jobs:
         sudo chown -R $(id -u):$(id -g) "$RUNNER_TEMP/artifacts-to-be-uploaded"
 
         # Stage 1: Guard selected real-distributed loss curves and sharding parity.
-        python -m tests.integration_tests.numerics \
+        python -m tests.integration_tests.run_numerics \
           --test_suite 8gpu \
           "$RUNNER_TEMP/artifacts-to-be-uploaded/distributed_numerics"
 
