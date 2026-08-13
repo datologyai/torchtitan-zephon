@@ -72,11 +72,12 @@ jobs:
 
         mkdir -p "$RUNNER_TEMP/artifacts-to-be-uploaded"
 
-        # Stage 1: exact numerics on a real world-size-1 process group. Until
-        # the A10G golden is checked in, actual.json is uploaded for review.
-        # Guard every feasible model's unsharded 10-step loss and grad norm.
+        # Stage 1: exact numerics on a real world-size-1 process group. Guard
+        # every feasible model's unsharded 10-step loss and grad norm against
+        # the A10G golden.
         python -m tests.integration_tests.run_numerics \
           --test_suite 1gpu \
+          --import-result tests/assets/losses/model_numerics_a10g.json \
           "$RUNNER_TEMP/artifacts-to-be-uploaded/model_numerics"
 
         # Stage 2: model and infrastructure composability with Fake PG.
@@ -84,7 +85,7 @@ jobs:
           --gpu_arch_type cuda \
           --test_suite models_fake_pg \
           --ngpu 1 \
-          "$RUNNER_TEMP/artifacts-to-be-uploaded"
+          "$RUNNER_TEMP/artifacts-to-be-uploaded/models"
         python -m tests.integration_tests.flux \
           --test_suite flux_fake_pg \
           --ngpu 1 \
