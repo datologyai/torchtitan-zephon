@@ -34,6 +34,8 @@ jobs:
     # Skip scheduled runs on forks, where they would only fail and email the fork owner
     if: github.repository_owner == 'pytorch' || github.event_name != 'schedule'
     uses: ./.github/workflows/set-matrix.yaml
+    with:
+      gpu-arch: cuda
 
   # Step 2: Use the dynamic matrix in the build-test job
   build-test:
@@ -69,11 +71,6 @@ jobs:
         fi
         python -m pip install --force-reinstall --pre \
           "${TORCH_SPEC}" torchvision --index-url ${{ matrix.index-url }}
-
-        if [[ "${{ matrix.gpu-arch-type }}" == "rocm" ]]; then
-          export HIPBLASLT_TENSILE_LIBPATH="$(python -c 'import os, torch; print(os.path.join(os.path.dirname(torch.__file__), "lib", "hipblaslt", "library"))')"
-          echo "HIPBLASLT_TENSILE_LIBPATH=${HIPBLASLT_TENSILE_LIBPATH}"
-        fi
 
         USE_CPP=0 python -m pip install --pre torchao --index-url ${{ matrix.index-url }}
 

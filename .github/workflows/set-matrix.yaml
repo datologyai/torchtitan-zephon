@@ -83,6 +83,8 @@ jobs:
           # Temporarily disable ROCm CI while the ROCm jobs are red.
           # Re-enable by removing this override and uncommenting the original
           # ROCm matrix block below.
+          # ROCm remains disabled. When enabled, it should run from a separate
+          # AMD workflow triggered only by pushes to main.
           ROCM_MATRIX=""
           FULL_MATRIX="$CUDA_MATRIX"
 

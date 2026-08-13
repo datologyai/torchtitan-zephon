@@ -15,16 +15,17 @@
   </thead>
   <tbody>
     <tr>
-      <td>NVIDIA A10G</td>
+      <td>NVIDIA GPU</td>
       <td>
         <a href="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_features.yaml?query=branch%3Amain"><img alt="Feature Tests" src="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_features.yaml/badge.svg?branch=main"></a>
         <a href="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_models.yaml?query=branch%3Amain"><img alt="Model Tests" src="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_models.yaml/badge.svg?branch=main"></a>
+        <a href="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_h100.yaml?query=branch%3Amain"><img alt="H100 Integration Tests" src="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_h100.yaml/badge.svg?branch=main"></a>
       </td>
     </tr>
     <tr>
-      <td>NVIDIA H100</td>
+      <td>AMD GPU</td>
       <td>
-        <a href="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_h100.yaml?query=branch%3Amain"><img alt="H100 Integration Tests" src="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_h100.yaml/badge.svg?branch=main"></a>
+        <img alt="ROCm Tests Disabled" src="https://img.shields.io/badge/ROCm_Tests-disabled-lightgrey">
       </td>
     </tr>
     <tr>

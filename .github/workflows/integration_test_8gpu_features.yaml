@@ -85,6 +85,8 @@ jobs:
     # Skip scheduled runs on forks, where they would only fail and email the fork owner
     if: github.repository_owner == 'pytorch' || github.event_name != 'schedule'
     uses: ./.github/workflows/set-matrix.yaml
+    with:
+      gpu-arch: cuda
 
   # Step 2: Use the dynamic matrix in the build-test job
   features-real-pg:
@@ -132,11 +134,6 @@ jobs:
         end=$(date +%s)
         echo "pip install torch took $((end - start)) seconds"
 
-        if [[ "${{ matrix.gpu-arch-type }}" == "rocm" ]]; then
-          export HIPBLASLT_TENSILE_LIBPATH="$(python -c 'import os, torch; print(os.path.join(os.path.dirname(torch.__file__), "lib", "hipblaslt", "library"))')"
-          echo "HIPBLASLT_TENSILE_LIBPATH=${HIPBLASLT_TENSILE_LIBPATH}"
-        fi
-
         start=$(date +%s)
         USE_CPP=0 python -m pip install --pre torchao --index-url ${{ matrix.index-url }}
         end=$(date +%s)
@@ -157,22 +154,7 @@ jobs:
         export baseline_options="--parallelism.data_parallel_replicate_degree=1"
         export test_options="--parallelism.data_parallel_replicate_degree=4"
 
-        # Set architecture-specific parameters
-        if [[ "${{ matrix.gpu-arch-type }}" == "cuda" ]]; then
-          LOSS_FILE="tests/assets/losses/llama3_cuda.txt"
-          STEPS=1
-        elif [[ "${{ matrix.gpu-arch-type }}" == "rocm" ]]; then
-          # The loss results of FSDP and HSDP start to diverge after 5th
-          # step when running with ROCm, we also need to adjust this.
-          # But this is more an unknown issue that AMD people may want to
-          # figure out the root cause or confirm that this is an expected
-          # behavior.
-          LOSS_FILE="tests/assets/losses/llama3_rocm_mi350x.txt"
-          STEPS=1
-        else
-          echo "Error: Unknown GPU architecture type: ${{ matrix.gpu-arch-type }}"
-          exit 1
-        fi
+        LOSS_FILE="tests/assets/losses/llama3_cuda.txt"
 
         python3 scripts/loss_compare.py . . --baseline-options="${baseline_options}" --job-dump-folder="${RUNNER_TEMP}/artifacts-to-be-uploaded/accuracy_comparison_outputs" --export-result="${RUNNER_TEMP}/artifacts-to-be-uploaded/accuracy_comparison_outputs/result.txt" --steps=100
 
@@ -185,11 +167,7 @@ jobs:
         rm -rf $RUNNER_TEMP/artifacts-to-be-uploaded/*
 
         # MoE loss comparison: verify Qwen3 MoE FSDP+TP+EP deterministic losses match reference
-        if [[ "${{ matrix.gpu-arch-type }}" == "cuda" ]]; then
-          MOE_LOSS_FILE="tests/assets/losses/qwen3_moe_cuda.txt"
-        elif [[ "${{ matrix.gpu-arch-type }}" == "rocm" ]]; then
-          MOE_LOSS_FILE="tests/assets/losses/qwen3_moe_rocm_mi350x.txt"
-        fi
+        MOE_LOSS_FILE="tests/assets/losses/qwen3_moe_cuda.txt"
 
         echo "Checking Qwen3 MoE FSDP+TP+EP loss parity against reference"
         # qwen3_moe_debug uses EP=1, where CUDA graphs are supported. This test
