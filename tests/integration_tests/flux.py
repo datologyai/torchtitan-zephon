@@ -27,7 +27,7 @@ def build_flux_test_list() -> list[OverrideDefinitions]:
                     "--module flux",
                     "--config flux_debugmodel",
                     # Route the canonical 8-GPU end-to-end run to a real PG.
-                    "--comm.mode default",
+                    "--comm.mode default",  # Needs a real PG for this test.
                     "--parallelism.data_parallel_shard_degree 2",
                     "--parallelism.data_parallel_replicate_degree 2",
                     "--parallelism.context_parallel_degree 2",

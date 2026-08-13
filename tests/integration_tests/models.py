@@ -58,13 +58,14 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
     """
     # Route one canonical 8-GPU end-to-end run per model to a real PG. Other
     # model configurations remain fake PG smoke tests unless their CLI
-    # overrides independently require real communication.
+    # overrides independently require real communication. Varlen attention is
+    # treated as a separate model coverage category with its own real PG run.
     model_tests = [
         OverrideDefinitions(
             [
                 [
                     "--module llama3 --config llama3_debugmodel",
-                    "--comm.mode default",
+                    "--comm.mode default",  # Needs a real PG for this test.
                     "--parallelism.pipeline_parallel_degree 2",
                     "--parallelism.data_parallel_shard_degree 2",
                     "--parallelism.tensor_parallel_degree 2",
@@ -100,7 +101,7 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module deepseek_v3 --config deepseek_v3_debugmodel",
-                    "--comm.mode default",
+                    "--comm.mode default",  # Needs a real PG for this test.
                     "--parallelism.pipeline_parallel_degree 2",
                     "--parallelism.pipeline_parallel_schedule Interleaved1F1B",
                     "--parallelism.data_parallel_shard_degree 2",
@@ -132,7 +133,7 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module qwen3 --config qwen3_debugmodel_moe_param_groups",
-                    "--comm.mode default",
+                    "--comm.mode default",  # Needs a real PG for this test.
                     "--parallelism.data_parallel_shard_degree 4",
                     "--parallelism.tensor_parallel_degree 2",
                     "--parallelism.expert_parallel_degree 4",
@@ -202,7 +203,7 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module qwen3_5 --config qwen35_debugmodel_moe",
-                    "--comm.mode default",
+                    "--comm.mode default",  # Needs a real PG for this test.
                     "--parallelism.data_parallel_shard_degree 2",
                     "--parallelism.pipeline_parallel_degree 2",
                     "--parallelism.tensor_parallel_degree 2",
@@ -251,7 +252,7 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module gpt_oss --config gpt_oss_debugmodel_flex",
-                    "--comm.mode default",
+                    "--comm.mode default",  # Needs a real PG for this test.
                     "--parallelism.data_parallel_shard_degree 2",
                     "--parallelism.context_parallel_degree 2",
                     "--parallelism.context_parallel_load_balancer ptrr",
@@ -271,6 +272,7 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module gpt_oss --config gpt_oss_debugmodel",
+                    "--comm.mode default",  # Needs a real PG for this test.
                     "--training.global_batch_size 64",
                     "--parallelism.data_parallel_shard_degree 4",
                     "--parallelism.pipeline_parallel_degree 2",
@@ -280,7 +282,7 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 ],
             ],
             "Gpt-oss PP+FSDP+EP+SACOP with VarlenAttention",
-            "gpt_oss_pp+fsdp+ep+sacop",
+            "gpt_oss_pp+fsdp+ep+sacop_varlen",
             ngpu=8,
         ),
         # Integration Test Cases for Kimi K2.7
@@ -312,7 +314,7 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module muse_glimmer --config muse_glimmer_debugmodel_mm",
-                    "--comm.mode default",
+                    "--comm.mode default",  # Needs a real PG for this test.
                     "--parallelism.data_parallel_shard_degree 4",
                     "--parallelism.tensor_parallel_degree 2",
                 ],
