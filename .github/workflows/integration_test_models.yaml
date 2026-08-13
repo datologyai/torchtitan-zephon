@@ -149,7 +149,7 @@ jobs:
           --gpu_arch_type ${{ matrix.gpu-arch-type }} \
           --test_suite models_real_pg \
           --ngpu 8 \
-          "$RUNNER_TEMP/artifacts-to-be-uploaded"
+          "$RUNNER_TEMP/artifacts-to-be-uploaded/models"
         python -m tests.integration_tests.flux \
           --test_suite flux_real_pg \
           --ngpu 8 \
