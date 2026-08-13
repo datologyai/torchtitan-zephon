@@ -7,6 +7,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
 import torch
 
 from torchtitan.config import CompileConfig
@@ -90,6 +91,7 @@ class TestApplyCompile(unittest.TestCase):
         finally:
             torch._inductor.config._micro_pipeline_tp = previous_micro_pipeline_tp
 
+    @pytest.mark.gpu
     @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
     def test_grouped_mm_compiles_and_runs(self):
         model = TinyModel(num_layers=2, dim=128).cuda()

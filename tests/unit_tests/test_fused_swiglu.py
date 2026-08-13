@@ -14,6 +14,7 @@ adapter. These run on CPU.
 
 import unittest
 
+import pytest
 import torch
 
 from torchtitan.models.common.feed_forward import FeedForward
@@ -60,6 +61,7 @@ class TestFusedSwiGLUCheckpointInterop(unittest.TestCase):
         self.assertTrue(torch.equal(sd["w1.weight"], fused.w13[:, 0]))
         self.assertTrue(torch.equal(sd["w3.weight"], fused.w13[:, 1]))
 
+    @pytest.mark.gpu
     @unittest.skipUnless(torch.cuda.is_available(), "silu_and_mul op is CUDA-only")
     def test_fused_checkpoint_loads_into_stock(self):
         """A fused checkpoint loads into the stock FeedForward, weights + output."""
@@ -72,6 +74,7 @@ class TestFusedSwiGLUCheckpointInterop(unittest.TestCase):
         x = torch.randn(4, _DIM, device="cuda")
         self.assertTrue(torch.allclose(fused(x), stock(x), atol=1e-5, rtol=1e-5))
 
+    @pytest.mark.gpu
     @unittest.skipUnless(torch.cuda.is_available(), "silu_and_mul op is CUDA-only")
     def test_stock_checkpoint_loads_into_fused(self):
         """A stock checkpoint loads into FusedSwiGLU, weights + output."""

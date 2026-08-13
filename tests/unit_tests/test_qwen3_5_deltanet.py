@@ -7,6 +7,7 @@
 import unittest
 from unittest import mock
 
+import pytest
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -434,6 +435,7 @@ class TestQwen35DeltaNetVarlen(unittest.TestCase):
             ),
         )
 
+    @pytest.mark.gpu
     def test_fla_chunked_varlen_matches_independent_document_forwards(self):
         # bf16 tolerance absorbs the differing chunk boundaries between the
         # packed varlen run and the per-document runs; tighten once confirmed on
@@ -442,6 +444,7 @@ class TestQwen35DeltaNetVarlen(unittest.TestCase):
             "fla_chunked", atol=2e-2, rtol=2e-2
         )
 
+    @pytest.mark.gpu
     def test_fla_fused_recurrent_varlen_matches_independent_document_forwards(self):
         self._assert_fla_varlen_matches_per_document(
             "fla_fused_recurrent", atol=2e-2, rtol=2e-2

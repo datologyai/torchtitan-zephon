@@ -6,6 +6,7 @@
 
 import unittest
 
+import pytest
 import spmd_types as spmd
 import torch
 
@@ -135,6 +136,7 @@ class TestFusedGroupedExperts(unittest.TestCase):
         self.assertIs(sc.local_map, base_sharding.local_map)
 
 
+@pytest.mark.gpu
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
 class TestFusedGroupedExpertsNumerics(unittest.TestCase):
     """The w13-fused experts must match the stock (unfused) GroupedExperts given
@@ -190,6 +192,7 @@ class TestFusedGroupedExpertsNumerics(unittest.TestCase):
         torch.testing.assert_close(x_fused.grad, x_stock.grad, atol=2e-2, rtol=2e-2)
 
 
+@pytest.mark.gpu
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
 class TestFusedSwiGLUOverrideKernels(unittest.TestCase):
     def test_silu_and_mul_custom_op_matches_reference_with_offsets(self):

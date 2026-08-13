@@ -7,6 +7,7 @@
 import contextlib
 import unittest
 
+import pytest
 import torch
 
 import torchtitan.distributed.compile as compile_mod
@@ -63,6 +64,7 @@ class TestRegionalInductorBackend(unittest.TestCase):
         self.assertNotIsInstance(ctx, contextlib.nullcontext)
 
 
+@pytest.mark.gpu
 @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
 class TestRegionalInductorCodegen(unittest.TestCase):
     """GPU test: the compiled program lowers FlexAttention to a triton kernel.

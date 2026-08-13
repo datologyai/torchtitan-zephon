@@ -8,6 +8,7 @@ import unittest
 from dataclasses import dataclass, field
 from unittest.mock import patch
 
+import pytest
 import torch
 import torchtitan.overrides.helion_rope as helion_rope_module
 from torchtitan.config import apply_overrides, Configurable, OverrideConfig
@@ -201,6 +202,7 @@ class TestHelionRoPEOverride(unittest.TestCase):
         torch.testing.assert_close(out_k, ref_k, rtol=0, atol=0)
 
 
+@pytest.mark.gpu
 @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
 class TestHelionRoPEKernel(unittest.TestCase):
     """Fused-kernel numerics vs the PyTorch RoPE modules (helion + CUDA only)."""

@@ -64,6 +64,9 @@ include = ["torchtitan*"]
 [tool.pytest.ini_options]
 addopts = ["--showlocals"]  # show local variables in tracebacks
 testpaths = ["tests"]
+markers = [
+    "gpu: tests that require one physical CUDA GPU",
+]
 
 [tool.pyrefly]
 project-excludes = ["torchtitan/experiments", "**/tests/**"]

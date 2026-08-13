@@ -6,6 +6,7 @@
 
 import unittest
 
+import pytest
 import torch
 import triton.language as tl
 
@@ -31,6 +32,7 @@ def assert_equal(actual: torch.Tensor, expected: torch.Tensor) -> None:
         raise AssertionError(f"tensor mismatch:\nactual={actual}\nexpected={expected}")
 
 
+@pytest.mark.gpu
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
 class TestMinimalAsyncEPKernels(unittest.TestCase):
     def test_topk_index_kernels_match_reference(self):

@@ -7,6 +7,7 @@
 import unittest
 from copy import deepcopy
 
+import pytest
 import torch
 from torch.utils.flop_counter import FlopCounterMode
 from torchtitan.distributed.activation_checkpoint import FullAC, SelectiveAC
@@ -95,6 +96,7 @@ class TestApplyAC(unittest.TestCase):
         self.assertEqual(flops_with_force_last, 11.0)
         self.assertEqual(flops_full_ac, 12.0)
 
+    @pytest.mark.gpu
     def test_mem(self):
         if not torch.cuda.is_available():
             raise unittest.SkipTest("CUDA is unavailable")
