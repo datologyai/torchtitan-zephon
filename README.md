@@ -48,6 +48,14 @@ We look forward to your contributions!
 * To accelerate contributions to and innovations around torchtitan, we host an [`experiments`](torchtitan/experiments) folder. New ideas should start there. To contribute, follow the [`experiments guidelines`](torchtitan/experiments/README.md).
 * For fixes and contributions to core, follow these [`guidelines`](CONTRIBUTING.md).
 
+### Test status
+
+| Hardware | Status |
+| --- | --- |
+| NVIDIA GPU | [![Infra Tests](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_infra.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_infra.yaml?query=branch%3Amain) [![Model Tests](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_models.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_models.yaml?query=branch%3Amain) [![H100 Integration Tests](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_h100.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_h100.yaml?query=branch%3Amain) |
+| AMD GPU | [![AMD Integration Tests](https://img.shields.io/badge/AMD_Integration_Tests-disabled-lightgrey)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_amd.yaml?query=branch%3Amain) |
+| CPU | [![CPU Unit Tests](https://github.com/pytorch/torchtitan/actions/workflows/unit_test_cpu.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/unit_test_cpu.yaml?query=branch%3Amain) |
+
 ## Llama 3.1 training
 
 ### Key features available
@@ -168,15 +176,6 @@ srun torchrun --nnodes 2
 ```
 
 If your gpu count per node is not 8, adjust `--nproc_per_node` in the torchrun command and `#SBATCH --gpus-per-task` in the SBATCH command section.
-
-## Test status
-
-| Hardware | Status |
-| --- | --- |
-| NVIDIA GPU | [![Infra Tests](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_infra.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_infra.yaml?query=branch%3Amain) [![Model Tests](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_models.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_models.yaml?query=branch%3Amain) [![H100 Integration Tests](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_h100.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_h100.yaml?query=branch%3Amain) |
-| AMD GPU | ![ROCm Tests Disabled](https://img.shields.io/badge/ROCm_Tests-disabled-lightgrey) |
-| CPU | [![CPU Unit Tests](https://github.com/pytorch/torchtitan/actions/workflows/unit_test_cpu.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/unit_test_cpu.yaml?query=branch%3Amain) |
-
 
 ## Citation
 
