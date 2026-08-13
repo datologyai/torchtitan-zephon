@@ -606,6 +606,7 @@ def build_infra_test_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module llama3 --config llama3_debugmodel_varlen_attn",
+                    "--comm.mode default",  # Needs a real PG for AC recompute.
                     "--parallelism.data_parallel_shard_degree=4",
                     "activation-checkpoint:selective",
                 ]
