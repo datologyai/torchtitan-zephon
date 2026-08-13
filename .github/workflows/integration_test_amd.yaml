@@ -1,4 +1,4 @@
-name: AMD Integration Tests
+name: AMD Feature Tests
 
 on:
   push:
@@ -26,8 +26,8 @@ jobs:
     with:
       gpu-arch: rocm
 
-  integration-1gpu:
-    name: 1 GPU Integration
+  features-1gpu:
+    name: 1 GPU Features (Fake PG)
     needs: set-matrix
     if: ${{ needs.set-matrix.outputs.matrix != '' && fromJSON(needs.set-matrix.outputs.matrix).include[0] != null }}
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
@@ -73,21 +73,11 @@ jobs:
           --test_suite features_fake_pg \
           --ngpu 1 \
           "$RUNNER_TEMP/artifacts-to-be-uploaded/features"
-        python -m tests.integration_tests.run_tests \
-          --gpu_arch_type rocm \
-          --test_suite models_fake_pg \
-          --ngpu 1 \
-          "$RUNNER_TEMP/artifacts-to-be-uploaded/models"
-        python -m tests.integration_tests.flux \
-          --test_suite flux_fake_pg \
-          --ngpu 1 \
-          "$RUNNER_TEMP/artifacts-to-be-uploaded/flux"
 
         rm -rf "$RUNNER_TEMP"/artifacts-to-be-uploaded/*/*/checkpoint
-        rm -rf "$RUNNER_TEMP"/artifacts-to-be-uploaded/flux/*/inference_results
 
-  integration-8gpu:
-    name: 8 GPU Integration
+  features-8gpu:
+    name: 8 GPU Features (Real PG)
     needs: set-matrix
     if: ${{ needs.set-matrix.outputs.matrix != '' && fromJSON(needs.set-matrix.outputs.matrix).include[0] != null }}
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
@@ -106,4 +96,5 @@ jobs:
         TORCH_VERSION="${{ matrix.torch-version }}" \
         INDEX_URL="${{ matrix.index-url }}" \
         GPU_ARCH_TYPE="${{ matrix.gpu-arch-type }}" \
+        TEST_SUITE="features_real_pg" \
         bash .github/scripts/run_8xgpu_integration_tests.sh

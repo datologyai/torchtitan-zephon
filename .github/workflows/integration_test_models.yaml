@@ -1,4 +1,4 @@
-name: Model Tests
+name: Integration Test - Models
 
 on:
   push:

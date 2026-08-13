@@ -14,12 +14,14 @@
 #   INDEX_URL      torch/torchao --index-url (required)
 #   GPU_ARCH_TYPE  "cuda" or "rocm" (required)
 #   TORCH_VERSION  torch version pin, empty for the latest nightly (optional)
+#   TEST_SUITE     integration suite, defaults to "h100" (optional)
 
 set -eux
 
 : "${INDEX_URL:?INDEX_URL must be set}"
 : "${GPU_ARCH_TYPE:?GPU_ARCH_TYPE must be set}"
 TORCH_VERSION="${TORCH_VERSION:-}"
+TEST_SUITE="${TEST_SUITE:-h100}"
 
 ARTIFACTS="$RUNNER_TEMP/artifacts-to-be-uploaded"
 
@@ -70,9 +72,8 @@ else
   mkdir -p "${ARTIFACTS}"
 fi
 
-# Install DeepEP for the HybridEP integration test. DeepEP (NVSHMEM) is
-# CUDA-only, so skip it on ROCm.
-if [[ "${GPU_ARCH_TYPE}" != "rocm" ]]; then
+# Install DeepEP only for the CUDA H100 suite's HybridEP test.
+if [[ "${TEST_SUITE}" == "h100" && "${GPU_ARCH_TYPE}" != "rocm" ]]; then
   bash /install_deepep.sh
 fi
 
@@ -80,5 +81,5 @@ fi
 # Disable Nvlink Sharp. The CI machine seems to be unstable state to support
 # NLVS according to several CI runs.
 # DeepEP needs CUDA_HOME specified to JIT kernels.
-CUDA_HOME=/usr/local/cuda NCCL_NVLS_ENABLE=0 TORCH_SHOW_CPP_STACKTRACES=1 python -m tests.integration_tests.run_tests --test_suite h100 --gpu_arch_type "${GPU_ARCH_TYPE}" "${ARTIFACTS}" --ngpu 8
+CUDA_HOME=/usr/local/cuda NCCL_NVLS_ENABLE=0 TORCH_SHOW_CPP_STACKTRACES=1 python -m tests.integration_tests.run_tests --test_suite "${TEST_SUITE}" --gpu_arch_type "${GPU_ARCH_TYPE}" "${ARTIFACTS}" --ngpu 8
 rm -rf "${ARTIFACTS}"/*/checkpoint

@@ -1,4 +1,4 @@
-name: Feature Tests
+name: Integration Tests - Features
 
 on:
   push:

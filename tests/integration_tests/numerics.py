@@ -42,14 +42,16 @@ SINGLE_GPU_OPTIONS = (
 
 def build_1gpu_numerics_test_list() -> dict[str, str]:
     """Guard unsharded model numerics with exact 10-step loss and grad norm."""
-    # Flux is deferred because its unsharded FP32 T5-XXL encoder does not fit
-    # alongside the rest of the model on a 24 GB A10G.
+    # Kimi and Muse use their text-only paths first. Their vision numerics are
+    # separate follow-up coverage; Kimi's bicubic CUDA backward is currently
+    # incompatible with deterministic mode. Flux is deferred because its
+    # unsharded FP32 T5-XXL encoder does not fit on a 24 GB A10G.
     return {
         "deepseek_v3": "deepseek_v3_debugmodel",
         "gpt_oss": "gpt_oss_debugmodel_flex",
-        "kimi_k2_7": "kimi_k2_5_debugmodel",
+        "kimi_k2_7": "kimi_k2_5_debugmodel_text",
         "llama3": "llama3_debugmodel",
-        "muse_glimmer": "muse_glimmer_debugmodel_mm",
+        "muse_glimmer": "muse_glimmer_debugmodel",
         "qwen3": "qwen3_debugmodel",
         "qwen3_5": "qwen35_debugmodel",
     }

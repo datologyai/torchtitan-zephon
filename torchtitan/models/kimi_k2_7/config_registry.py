@@ -90,6 +90,13 @@ def kimi_k2_5_debugmodel() -> Trainer.Config:
     )
 
 
+def kimi_k2_5_debugmodel_text() -> Trainer.Config:
+    """Run the Kimi K2.5 debug model through its text-only input path."""
+    config = kimi_k2_5_debugmodel()
+    config.dataloader = HuggingFaceTextDataLoader.Config(dataset="c4_test")
+    return config
+
+
 def moonlight_16b_a3b() -> Trainer.Config:
     """Moonlight 16B-A3B: the text-only DeepSeekV3 sibling (no vision tower)."""
     model_spec = model_registry("moonlight-16B-A3B", attn_backend="flex")
