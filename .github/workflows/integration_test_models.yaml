@@ -29,26 +29,26 @@ permissions:
   contents: read
 
 jobs:
-  set-matrix-fake-pg:
+  set-matrix-1gpu:
     if: github.repository_owner == 'pytorch' || github.event_name != 'schedule'
     uses: ./.github/workflows/set-matrix.yaml
     with:
       runner-cuda: mt-l-x86aavx2-29-113-a10g
       gpu-arch: cuda
 
-  models-fake-pg:
-    name: 1 GPU Models (Fake PG)
-    needs: set-matrix-fake-pg
-    if: ${{ needs.set-matrix-fake-pg.outputs.matrix != '' && fromJSON(needs.set-matrix-fake-pg.outputs.matrix).include[0] != null }}
+  models-1gpu:
+    name: 1 GPU Models (Fake PG + Numerics)
+    needs: set-matrix-1gpu
+    if: ${{ needs.set-matrix-1gpu.outputs.matrix != '' && fromJSON(needs.set-matrix-1gpu.outputs.matrix).include[0] != null }}
     uses: pytorch/test-infra/.github/workflows/linux_job_v3.yml@main
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.set-matrix-fake-pg.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.set-matrix-1gpu.outputs.matrix) }}
     with:
       runner: ${{ matrix.runner }}
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
-      docker-image: 308535385114.dkr.ecr.us-east-1.amazonaws.com/torchtitan/${{ matrix.docker-image }}:${{ needs.set-matrix-fake-pg.outputs.docker-hash }}
+      docker-image: 308535385114.dkr.ecr.us-east-1.amazonaws.com/torchtitan/${{ matrix.docker-image }}:${{ needs.set-matrix-1gpu.outputs.docker-hash }}
       repository: pytorch/torchtitan
       upload-artifact: outputs
       timeout: 60
@@ -72,7 +72,14 @@ jobs:
 
         mkdir -p "$RUNNER_TEMP/artifacts-to-be-uploaded"
 
-        # TODO: Add 1-GPU model numerics here so it shares this runner.
+        # Stage 1: exact numerics on a real world-size-1 process group. Until
+        # the A10G golden is checked in, actual.json is uploaded for review.
+        # Guard every feasible model's unsharded 10-step loss and grad norm.
+        python -m tests.integration_tests.numerics \
+          --test_suite 1gpu \
+          "$RUNNER_TEMP/artifacts-to-be-uploaded/model_numerics"
+
+        # Stage 2: model and infrastructure composability with Fake PG.
         python -m tests.integration_tests.run_tests \
           --gpu_arch_type cuda \
           --test_suite models_fake_pg \
@@ -92,8 +99,8 @@ jobs:
     with:
       gpu-arch: cuda
 
-  models-real-pg:
-    name: 8 GPU Models (Real PG)
+  models-8gpu:
+    name: 8 GPU Models (Real PG + Numerics)
     needs: set-matrix-real-pg
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     strategy:
@@ -131,7 +138,12 @@ jobs:
         sudo mkdir -p "$RUNNER_TEMP/artifacts-to-be-uploaded"
         sudo chown -R $(id -u):$(id -g) "$RUNNER_TEMP/artifacts-to-be-uploaded"
 
-        # TODO: Add 8-GPU model numerics here so it shares this runner.
+        # Stage 1: Guard selected real-distributed loss curves and sharding parity.
+        python -m tests.integration_tests.numerics \
+          --test_suite 8gpu \
+          "$RUNNER_TEMP/artifacts-to-be-uploaded/distributed_numerics"
+
+        # Stage 2: Run one real-distributed composability configuration per model.
         python -m tests.integration_tests.run_tests \
           --gpu_arch_type ${{ matrix.gpu-arch-type }} \
           --test_suite models_real_pg \
@@ -143,4 +155,5 @@ jobs:
           "$RUNNER_TEMP/artifacts-to-be-uploaded/flux"
 
         rm -rf $RUNNER_TEMP/artifacts-to-be-uploaded/*/checkpoint
+        rm -rf $RUNNER_TEMP/artifacts-to-be-uploaded/distributed_numerics/*/checkpoint
         rm -rf $RUNNER_TEMP/artifacts-to-be-uploaded/flux/*/inference_results/

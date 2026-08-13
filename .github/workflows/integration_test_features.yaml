@@ -149,38 +149,6 @@ jobs:
         sudo mkdir -p "comm_traces"
         sudo chown -R $(id -u):$(id -g) "comm_traces"
 
-        # Verify the accuracy first.
-        echo "Checking FSDP8 v.s. HSDP (4, 2) accuracy parity"
-        export baseline_options="--parallelism.data_parallel_replicate_degree=1"
-        export test_options="--parallelism.data_parallel_replicate_degree=4"
-
-        LOSS_FILE="tests/assets/losses/llama3_cuda.txt"
-
-        python3 scripts/loss_compare.py . . --baseline-options="${baseline_options}" --job-dump-folder="${RUNNER_TEMP}/artifacts-to-be-uploaded/accuracy_comparison_outputs" --export-result="${RUNNER_TEMP}/artifacts-to-be-uploaded/accuracy_comparison_outputs/result.txt" --steps=100
-
-         echo "Checking FSDP8 the first tep loss is the same as FSDP2HSDP4"
-        python3 scripts/loss_compare.py . . --baseline-options="${baseline_options}" --test-options="${test_options}" --job-dump-folder="${RUNNER_TEMP}/artifacts-to-be-uploaded/accuracy_comparison_outputs" --assert-equal --steps=1
-        rm -rf $RUNNER_TEMP/artifacts-to-be-uploaded/*
-
-         echo "Checking FSDP8 loss from a new run v.s. FSDP8 loss from text file parity"
-        python3 scripts/loss_compare.py . . --baseline-options="${baseline_options}" --job-dump-folder="${RUNNER_TEMP}/artifacts-to-be-uploaded/accuracy_comparison_outputs" --import-result="${LOSS_FILE}" --assert-equal --steps=100
-        rm -rf $RUNNER_TEMP/artifacts-to-be-uploaded/*
-
-        # MoE loss comparison: verify Qwen3 MoE FSDP+TP+EP deterministic losses match reference
-        MOE_LOSS_FILE="tests/assets/losses/qwen3_moe_cuda.txt"
-
-        echo "Checking Qwen3 MoE FSDP+TP+EP loss parity against reference"
-        # qwen3_moe_debug uses EP=1, where CUDA graphs are supported. This test
-        # overrides EP to 4 without changing the AllToAll token dispatcher,
-        # whose CPU synchronization is incompatible with CUDA graph capture.
-        python3 scripts/loss_compare.py . . \
-          --baseline-module=qwen3 --baseline-config=qwen3_moe_debug \
-          --baseline-options="--parallelism.tensor_parallel_degree 2 --parallelism.expert_parallel_degree 4 --training.disable_cuda_graphs" \
-          --test-options="--parallelism.tensor_parallel_degree 2 --parallelism.expert_parallel_degree 4 --training.disable_cuda_graphs" \
-          --job-dump-folder="${RUNNER_TEMP}/artifacts-to-be-uploaded/moe_loss_comparison" \
-          --import-result="${MOE_LOSS_FILE}" --assert-equal --steps=100
-        rm -rf $RUNNER_TEMP/artifacts-to-be-uploaded/*
-
         python -m tests.integration_tests.run_tests --gpu_arch_type ${{ matrix.gpu-arch-type }} --test_suite features_real_pg $RUNNER_TEMP/artifacts-to-be-uploaded --ngpu 8
 
         # Cleanup the checkpoints so that we don't waste network bandwidth and time.

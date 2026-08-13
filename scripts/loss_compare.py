@@ -159,6 +159,19 @@ def extract_losses_from_tensorboard(
     Returns:
         Dictionary mapping step number to full-precision loss value.
     """
+    return extract_scalar_from_tensorboard(
+        job_dump_folder,
+        tb_folder,
+        TB_LOSS_TAG,
+    )
+
+
+def extract_scalar_from_tensorboard(
+    job_dump_folder: str,
+    tb_folder: str,
+    scalar_tag: str,
+) -> dict[int, float]:
+    """Extract one scalar tag from TensorBoard event files."""
     from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
     base_path = os.path.join(job_dump_folder, tb_folder)
@@ -183,7 +196,6 @@ def extract_losses_from_tensorboard(
     event_acc = EventAccumulator(event_dir)
     event_acc.Reload()
 
-    scalar_tag = TB_LOSS_TAG
     available_tags = event_acc.Tags().get("scalars", [])
 
     if scalar_tag not in available_tags:  # pyrefly: ignore [not-iterable]
@@ -193,10 +205,12 @@ def extract_losses_from_tensorboard(
         )
 
     scalars = event_acc.Scalars(scalar_tag)
-    losses = {scalar.step: scalar.value for scalar in scalars}
+    values = {scalar.step: scalar.value for scalar in scalars}
 
-    log_print(f"Extracted {len(losses)} steps from TensorBoard events")
-    return losses
+    log_print(
+        f"Extracted {len(values)} steps for '{scalar_tag}' from TensorBoard events"
+    )
+    return values
 
 
 def log_and_save(message: str, stats_file: str | None) -> None:
