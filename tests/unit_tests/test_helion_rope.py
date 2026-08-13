@@ -212,6 +212,7 @@ class TestHelionRoPEKernel(unittest.TestCase):
         self.device = torch.device("cuda")
         self.dim = 128
         self.seqlen = 64
+        self.original_seq_len = 4096
         self.cossin = CosSinRoPE.Config(dim=self.dim, max_seq_len=self.seqlen).build()
         self.complex = ComplexRoPE.Config(
             dim=self.dim,
@@ -220,7 +221,7 @@ class TestHelionRoPEKernel(unittest.TestCase):
             rope_factor=40.0,
             beta_fast=32.0,
             beta_slow=1.0,
-            original_seq_len=self.seqlen,
+            original_seq_len=self.original_seq_len,
         ).build()
         self.helion = HelionCosSinRoPE.Config(
             dim=self.dim, max_seq_len=self.seqlen
@@ -232,7 +233,7 @@ class TestHelionRoPEKernel(unittest.TestCase):
             rope_factor=40.0,
             beta_fast=32.0,
             beta_slow=1.0,
-            original_seq_len=self.seqlen,
+            original_seq_len=self.original_seq_len,
         ).build()
         self.cossin.to(self.device)
         self.complex.to(self.device)
