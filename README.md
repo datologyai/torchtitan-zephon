@@ -48,7 +48,7 @@ We look forward to your contributions!
 * To accelerate contributions to and innovations around torchtitan, we host an [`experiments`](torchtitan/experiments) folder. New ideas should start there. To contribute, follow the [`experiments guidelines`](torchtitan/experiments/README.md).
 * For fixes and contributions to core, follow these [`guidelines`](CONTRIBUTING.md).
 
-### Test status
+## Test status
 
 | Hardware | Status |
 | --- | --- |
