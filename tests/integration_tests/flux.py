@@ -26,6 +26,8 @@ def build_flux_test_list() -> list[OverrideDefinitions]:
                     "--training.disable_cuda_graphs",
                     "--module flux",
                     "--config flux_debugmodel",
+                    # Route the canonical 8-GPU end-to-end run to a real PG.
+                    "--comm.mode default",
                     "--parallelism.data_parallel_shard_degree 2",
                     "--parallelism.data_parallel_replicate_degree 2",
                     "--parallelism.context_parallel_degree 2",

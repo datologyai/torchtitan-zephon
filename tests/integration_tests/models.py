@@ -56,7 +56,25 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
     Returns:
         A dictionary where each key is a model name and value is a list of OverrideDefinitions
     """
+    # Route one canonical 8-GPU end-to-end run per model to a real PG. Other
+    # model configurations remain fake PG smoke tests unless their CLI
+    # overrides independently require real communication.
     model_tests = [
+        OverrideDefinitions(
+            [
+                [
+                    "--module llama3 --config llama3_debugmodel",
+                    "--comm.mode default",
+                    "--parallelism.pipeline_parallel_degree 2",
+                    "--parallelism.data_parallel_shard_degree 2",
+                    "--parallelism.tensor_parallel_degree 2",
+                    "--compile.enable",
+                ],
+            ],
+            "Llama 3 PP+FSDP+TP+compile",
+            "llama3_pp+fsdp+tp+compile",
+            ngpu=8,
+        ),
         # Integration Test Cases for DeepSeek V3
         OverrideDefinitions(
             [
@@ -82,6 +100,7 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module deepseek_v3 --config deepseek_v3_debugmodel",
+                    "--comm.mode default",
                     "--parallelism.pipeline_parallel_degree 2",
                     "--parallelism.pipeline_parallel_schedule Interleaved1F1B",
                     "--parallelism.data_parallel_shard_degree 2",
@@ -113,14 +132,15 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module qwen3 --config qwen3_debugmodel_moe_param_groups",
-                    "--parallelism.data_parallel_shard_degree 2",
+                    "--comm.mode default",
+                    "--parallelism.data_parallel_shard_degree 4",
                     "--parallelism.tensor_parallel_degree 2",
                     "--parallelism.expert_parallel_degree 4",
                 ],
             ],
             "Qwen3 MoE FSDP+TP+EP (param groups)",
             "qwen3_moe_fsdp+tp+ep_param_groups",
-            ngpu=4,
+            ngpu=8,
         ),
         OverrideDefinitions(
             [
@@ -182,6 +202,7 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module qwen3_5 --config qwen35_debugmodel_moe",
+                    "--comm.mode default",
                     "--parallelism.data_parallel_shard_degree 2",
                     "--parallelism.pipeline_parallel_degree 2",
                     "--parallelism.tensor_parallel_degree 2",
@@ -202,11 +223,10 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                     # First-run FLA/TileLang kernel compile and autotune exceed
                     # the default 100s train timeout.
                     "--comm.train_timeout_seconds 600",
-                    "activation-checkpoint:selective",
                 ]
             ],
-            "Qwen3.5 FSDP+TP+VARLEN_ATTN + per op SAC",
-            "qwen3_5_fsdp+tp+varlen_attn+per_op_sac",
+            "Qwen3.5 FSDP+TP+VARLEN_ATTN",
+            "qwen3_5_fsdp+tp+varlen_attn",
             ngpu=4,
             skip_rocm_test=True,
         ),
@@ -231,6 +251,7 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module gpt_oss --config gpt_oss_debugmodel_flex",
+                    "--comm.mode default",
                     "--parallelism.data_parallel_shard_degree 2",
                     "--parallelism.context_parallel_degree 2",
                     "--parallelism.context_parallel_load_balancer ptrr",
@@ -274,6 +295,7 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                     # Do not enable --debug.spmd_typechecking: multimodal pixel
                     # tensors from the dataloader are not SPMD-annotated yet.
                     "--module kimi_k2_7 --config kimi_k2_5_debugmodel",
+                    "--comm.mode default",
                     "--parallelism.spmd_backend spmd_types",
                     "--parallelism.data_parallel_shard_degree 4",
                     "--parallelism.expert_parallel_degree 2",
@@ -290,13 +312,14 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module muse_glimmer --config muse_glimmer_debugmodel_mm",
-                    "--parallelism.data_parallel_shard_degree 2",
+                    "--comm.mode default",
+                    "--parallelism.data_parallel_shard_degree 4",
                     "--parallelism.tensor_parallel_degree 2",
                 ],
             ],
             "Muse Glimmer multimodal FSDP+TP+SP",
             "muse_glimmer_mm_fsdp+tp+sp",
-            ngpu=4,
+            ngpu=8,
         ),
     ]
 
