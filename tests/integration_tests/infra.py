@@ -7,10 +7,9 @@
 
 import dataclasses
 import os
-import shlex
 from collections.abc import Sequence
 
-from tests.integration_tests import OverrideDefinitions
+from tests.integration_tests import OverrideDefinitions, requires_real_pg
 
 
 def _is_pp_only(variant: Sequence[str], ngpu: int) -> bool:
@@ -133,7 +132,7 @@ else:
     )
 
 
-def build_features_test_list() -> list[OverrideDefinitions]:
+def build_infra_test_list() -> list[OverrideDefinitions]:
     """
     key is the config file name and value is a list of OverrideDefinitions
     that is used to generate variations of integration tests based on the
@@ -698,58 +697,11 @@ def build_features_test_list() -> list[OverrideDefinitions]:
     ]
 
 
-def _requires_real_pg(test: OverrideDefinitions) -> bool:
-    """Return whether CLI overrides require communication between real ranks."""
-    for variant in test.override_args:
-        cli_args = [
-            cli_arg for override in variant for cli_arg in shlex.split(override)
-        ]
-
-        # Checkpoint tests require rank-local shards, metadata coordination,
-        # save/load, and resharding. Fake PG cannot validate these semantics.
-        if (
-            "--checkpoint.enable" in cli_args
-            or "--checkpoint.create_seed_checkpoint" in cli_args
-        ):
-            return True
-
-        # AC does not fundamentally require a real PG, but FSDP backward
-        # recompute currently hits shard/storage shape mismatches with fake
-        # collectives. Disabling AC would stop testing the intended feature.
-        if any(
-            cli_arg.startswith("activation-checkpoint:")
-            and cli_arg != "activation-checkpoint:none"
-            for cli_arg in cli_args
-        ):
-            return True
-
-        for index, cli_arg in enumerate(cli_args):
-            option, separator, value = cli_arg.partition("=")
-            if option not in {
-                "--parallelism.pipeline_parallel_degree",
-                "--comm.mode",
-            }:
-                continue
-            if not separator:
-                value = cli_args[index + 1]
-
-            # PP needs cross-rank send/recv, while Fake PG point-to-point
-            # operations are no-ops and cannot transfer activations or grads.
-            if option == "--parallelism.pipeline_parallel_degree" and int(value) > 1:
-                return True
-
-            # An explicit non-fake mode must exercise its requested backend,
-            # instead of replacing the system under test with Fake PG.
-            if option == "--comm.mode" and value != "fake_backend":
-                return True
-    return False
+def build_fake_pg_infra_test_list() -> list[OverrideDefinitions]:
+    """Build infra tests that complete a training step with a fake PG."""
+    return [test for test in build_infra_test_list() if not requires_real_pg(test)]
 
 
-def build_fake_pg_features_test_list() -> list[OverrideDefinitions]:
-    """Build feature tests that complete a training step with a fake PG."""
-    return [test for test in build_features_test_list() if not _requires_real_pg(test)]
-
-
-def build_real_pg_features_test_list() -> list[OverrideDefinitions]:
-    """Build feature tests that require a real process group."""
-    return [test for test in build_features_test_list() if _requires_real_pg(test)]
+def build_real_pg_infra_test_list() -> list[OverrideDefinitions]:
+    """Build infra tests that require a real process group."""
+    return [test for test in build_infra_test_list() if requires_real_pg(test)]

@@ -1,4 +1,4 @@
-name: Feature Tests
+name: Infra Tests
 
 on:
   push:
@@ -35,8 +35,8 @@ jobs:
       runner-cuda: mt-l-x86aavx2-29-113-a10g
       gpu-arch: cuda
 
-  features-fake-pg:
-    name: 1 GPU Features (Fake PG)
+  infra-fake-pg:
+    name: 1 GPU Infra (Fake PG)
     needs: set-matrix-fake-pg
     if: ${{ needs.set-matrix-fake-pg.outputs.matrix != '' && fromJSON(needs.set-matrix-fake-pg.outputs.matrix).include[0] != null }}
     uses: pytorch/test-infra/.github/workflows/linux_job_v3.yml@main
@@ -73,7 +73,7 @@ jobs:
 
         python -m tests.integration_tests.run_tests \
           --gpu_arch_type cuda \
-          --test_suite features_fake_pg \
+          --test_suite infra_fake_pg \
           --ngpu 1 \
           "$RUNNER_TEMP/artifacts-to-be-uploaded"
 
@@ -89,8 +89,8 @@ jobs:
       gpu-arch: cuda
 
   # Step 2: Use the dynamic matrix in the build-test job
-  features-real-pg:
-    name: 8 GPU Features (Real PG)
+  infra-real-pg:
+    name: 8 GPU Infra (Real PG)
     needs: set-matrix-real-pg
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     strategy:
@@ -125,8 +125,8 @@ jobs:
         python -m pip install --force-reinstall --pre \
           "${TORCH_SPEC}" --index-url ${{ matrix.index-url }}
 
-        # The torchcomms feature tests are currently disabled, so do not install
-        # torchcomms in the main feature job. Its wheel pins torch exactly and
+        # The torchcomms infra tests are currently disabled, so do not install
+        # torchcomms in the main infra job. Its wheel pins torch exactly and
         # can force CI off the latest torch nightly.
         # if [[ "${{ matrix.gpu-arch-type }}" == "cuda" ]]; then
         #   python -m pip install --pre torchcomms --index-url ${{ matrix.index-url }}
@@ -181,7 +181,7 @@ jobs:
           --import-result="${MOE_LOSS_FILE}" --assert-equal --steps=100
         rm -rf $RUNNER_TEMP/artifacts-to-be-uploaded/*
 
-        python -m tests.integration_tests.run_tests --gpu_arch_type ${{ matrix.gpu-arch-type }} --test_suite features_real_pg $RUNNER_TEMP/artifacts-to-be-uploaded --ngpu 8
+        python -m tests.integration_tests.run_tests --gpu_arch_type ${{ matrix.gpu-arch-type }} --test_suite infra_real_pg $RUNNER_TEMP/artifacts-to-be-uploaded --ngpu 8
 
         # Cleanup the checkpoints so that we don't waste network bandwidth and time.
         rm -rf $RUNNER_TEMP/artifacts-to-be-uploaded/*/checkpoint

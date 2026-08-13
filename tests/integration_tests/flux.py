@@ -9,7 +9,7 @@ import os
 
 from torchtitan.tools.logging import logger
 
-from tests.integration_tests import OverrideDefinitions
+from tests.integration_tests import OverrideDefinitions, requires_real_pg
 from tests.integration_tests.run_tests import _run_cmd
 
 
@@ -55,12 +55,27 @@ def build_flux_test_list() -> list[OverrideDefinitions]:
     return integration_tests_flavors
 
 
+def build_fake_pg_flux_test_list() -> list[OverrideDefinitions]:
+    """Build Flux tests that complete a training step with a fake PG."""
+    return [test for test in build_flux_test_list() if not requires_real_pg(test)]
+
+
+def build_real_pg_flux_test_list() -> list[OverrideDefinitions]:
+    """Build Flux tests that require a real process group."""
+    return [test for test in build_flux_test_list() if requires_real_pg(test)]
+
+
 _TEST_SUITES_FUNCTION = {
-    "flux": build_flux_test_list,
+    "flux_fake_pg": build_fake_pg_flux_test_list,
+    "flux_real_pg": build_real_pg_flux_test_list,
 }
 
 
-def run_single_test(test_flavor: OverrideDefinitions, output_dir: str):
+def run_single_test(
+    test_flavor: OverrideDefinitions,
+    output_dir: str,
+    comm_mode: str | None = None,
+):
     # run_test supports sequence of tests.
     test_name = test_flavor.test_name
     dump_folder_arg = f"--dump_folder {output_dir}/{test_name}"
@@ -80,7 +95,11 @@ def run_single_test(test_flavor: OverrideDefinitions, output_dir: str):
     all_ranks = ",".join(map(str, range(test_flavor.ngpu)))
 
     for idx, override_arg in enumerate(test_flavor.override_args):
-        cmd = f"NGPU={test_flavor.ngpu} LOG_RANK={all_ranks} ./run_train.sh"
+        comm_mode_prefix = f"COMM_MODE={comm_mode} " if comm_mode is not None else ""
+        cmd = (
+            f"{comm_mode_prefix}NGPU={test_flavor.ngpu} "
+            f"LOG_RANK={all_ranks} ./run_train.sh"
+        )
         # dump compile trace for debugging purpose
         cmd = f'TORCH_TRACE="{output_dir}/{test_name}/compile_trace" ' + cmd
 
@@ -124,13 +143,13 @@ def run_tests(args, test_list: list[OverrideDefinitions]):
             continue
 
         # Check if we have enough GPUs
-        if args.ngpu < test_flavor.ngpu:
+        if args.comm_mode is None and args.ngpu < test_flavor.ngpu:
             logger.info(
                 f"Skipping test {test_flavor.test_name} that requires {test_flavor.ngpu} gpus,"
                 f" because --ngpu arg is {args.ngpu}"
             )
         else:
-            run_single_test(test_flavor, args.output_dir)
+            run_single_test(test_flavor, args.output_dir, args.comm_mode)
 
 
 def main():
@@ -142,14 +161,20 @@ def main():
         help="test to run, acceptable values: `test_name` in `build_test_list` (default: all)",
     )
     parser.add_argument("--ngpu", default=8, type=int)
+    parser.add_argument(
+        "--test_suite",
+        default="flux_real_pg",
+        choices=["flux_fake_pg", "flux_real_pg"],
+    )
     args = parser.parse_args()
+    args.comm_mode = "fake_backend" if args.test_suite.endswith("_fake_pg") else None
 
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
     if os.listdir(args.output_dir):
         raise RuntimeError("Please provide an empty output directory.")
 
-    test_list = _TEST_SUITES_FUNCTION["flux"]()
+    test_list = _TEST_SUITES_FUNCTION[args.test_suite]()
     run_tests(args, test_list)
 
 

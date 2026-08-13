@@ -4,11 +4,13 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 __all__ = [
     "OverrideDefinitions",
+    "requires_real_pg",
 ]
 
 
@@ -28,3 +30,50 @@ class OverrideDefinitions:
 
     def __repr__(self):
         return self.test_descr
+
+
+def requires_real_pg(test: OverrideDefinitions) -> bool:
+    """Return whether CLI overrides require communication between real ranks."""
+    for variant in test.override_args:
+        cli_args = [
+            cli_arg for override in variant for cli_arg in shlex.split(override)
+        ]
+
+        # Checkpoint tests require rank-local shards, metadata coordination,
+        # save/load, and resharding. Fake PG cannot validate these semantics.
+        if (
+            "--checkpoint.enable" in cli_args
+            or "--checkpoint.create_seed_checkpoint" in cli_args
+        ):
+            return True
+
+        # AC does not fundamentally require a real PG, but FSDP backward
+        # recompute currently hits shard/storage shape mismatches with fake
+        # collectives. Disabling AC would stop testing the intended feature.
+        if any(
+            cli_arg.startswith("activation-checkpoint:")
+            and cli_arg != "activation-checkpoint:none"
+            for cli_arg in cli_args
+        ):
+            return True
+
+        for index, cli_arg in enumerate(cli_args):
+            option, separator, value = cli_arg.partition("=")
+            if option not in {
+                "--parallelism.pipeline_parallel_degree",
+                "--comm.mode",
+            }:
+                continue
+            if not separator:
+                value = cli_args[index + 1]
+
+            # PP needs cross-rank send/recv, while Fake PG point-to-point
+            # operations are no-ops and cannot transfer activations or grads.
+            if option == "--parallelism.pipeline_parallel_degree" and int(value) > 1:
+                return True
+
+            # An explicit non-fake mode must exercise its requested backend,
+            # instead of replacing the system under test with Fake PG.
+            if option == "--comm.mode" and value != "fake_backend":
+                return True
+    return False
