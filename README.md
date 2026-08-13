@@ -4,8 +4,38 @@
 
 #### A PyTorch native platform for training generative AI models
 
-[![Feature Tests](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_features.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_features.yaml?query=branch%3Amain)
-[![8 GPU Model Tests](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_models.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_models.yaml?query=branch%3Amain)
+<h4>Test Status</h4>
+
+<table>
+  <thead>
+    <tr>
+      <th>Hardware</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>NVIDIA A10G</td>
+      <td>
+        <a href="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_features.yaml?query=branch%3Amain"><img alt="Feature Tests" src="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_features.yaml/badge.svg?branch=main"></a>
+        <a href="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_models.yaml?query=branch%3Amain"><img alt="Model Tests" src="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_models.yaml/badge.svg?branch=main"></a>
+      </td>
+    </tr>
+    <tr>
+      <td>NVIDIA H100</td>
+      <td>
+        <a href="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_h100.yaml?query=branch%3Amain"><img alt="H100 Integration Tests" src="https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_h100.yaml/badge.svg?branch=main"></a>
+      </td>
+    </tr>
+    <tr>
+      <td>CPU</td>
+      <td>
+        <a href="https://github.com/pytorch/torchtitan/actions/workflows/unit_test_cpu.yaml?query=branch%3Amain"><img alt="CPU Unit Tests" src="https://github.com/pytorch/torchtitan/actions/workflows/unit_test_cpu.yaml/badge.svg?branch=main"></a>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
 [![arXiv](https://img.shields.io/badge/arXiv-2410.06511-b31b1b.svg)](https://arxiv.org/abs/2410.06511)
 [![ICLR](https://img.shields.io/badge/ICLR-2025-violet.svg)](https://iclr.cc/virtual/2025/poster/29620)
 [![forum](https://img.shields.io/badge/pytorch-forum-DE3412.svg)](https://discuss.pytorch.org/c/distributed/torchtitan/44)
