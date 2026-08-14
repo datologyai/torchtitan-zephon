@@ -64,9 +64,6 @@ jobs:
         CONDA_ENV=$(conda env list --json | jq -r ".envs | .[-1]")
         conda activate "${CONDA_ENV}"
 
-        export HF_HOME="$RUNNER_TEMP/hf_home"
-        export HF_DATASETS_CACHE="$RUNNER_TEMP/hf_home/datasets"
-
         if [[ "${{ matrix.gpu-arch-type }}" == "cuda" ]]; then
           DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1 || true)
           echo "CUDA driver version: ${DRIVER_VERSION}"
