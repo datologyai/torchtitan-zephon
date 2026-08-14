@@ -58,6 +58,7 @@ def _supports_spmd_typechecking(test_name: str, variant: Sequence[str]) -> bool:
         "1d_compile_sac_op_spmd_types",
         "2d_compile_spmd_types",
         "2d_asynctp_compile_spmd_types",
+        "3d_compile_spmd_types",
         "torchcomms_3d_dp+cp+pp+compile_spmd_types",
         "torchcomms_3d_dp+tp+pp+compile_spmd_types",
         # PP is not compatible with SPMD typechecking yet.

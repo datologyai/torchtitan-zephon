@@ -64,6 +64,7 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
         OverrideDefinitions(
             [
                 [
+                    "--training.disable_cuda_graphs",
                     "--module llama3 --config llama3_debugmodel",
                     "--comm.mode default",  # Needs a real PG for this test.
                     "--parallelism.pipeline_parallel_degree 2",
