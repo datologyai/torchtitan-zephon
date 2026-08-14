@@ -1,6 +1,13 @@
 name: Integration Tests - Features
 
 on:
+  workflow_call:
+    inputs:
+      gpu-arch:
+        description: "GPU architecture to test ('cuda' or 'rocm')"
+        required: false
+        type: string
+        default: cuda
   push:
     branches: [ main ]
     tags:
@@ -32,14 +39,14 @@ jobs:
     if: github.repository_owner == 'pytorch' || github.event_name != 'schedule'
     uses: ./.github/workflows/set-matrix.yaml
     with:
-      runner-cuda: mt-l-x86aavx2-29-113-a10g
-      gpu-arch: cuda
+      runner-cuda: linux.g5.4xlarge.nvidia.gpu
+      gpu-arch: ${{ inputs.gpu-arch || 'cuda' }}
 
   features-fake-pg:
     name: 1 GPU Features (Fake PG)
     needs: set-matrix-fake-pg
     if: ${{ needs.set-matrix-fake-pg.outputs.matrix != '' && fromJSON(needs.set-matrix-fake-pg.outputs.matrix).include[0] != null }}
-    uses: pytorch/test-infra/.github/workflows/linux_job_v3.yml@main
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.set-matrix-fake-pg.outputs.matrix) }}
@@ -47,7 +54,7 @@ jobs:
       runner: ${{ matrix.runner }}
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
-      docker-image: 308535385114.dkr.ecr.us-east-1.amazonaws.com/torchtitan/${{ matrix.docker-image }}:${{ needs.set-matrix-fake-pg.outputs.docker-hash }}
+      docker-image: ${{ matrix.docker-image }}
       repository: pytorch/torchtitan
       upload-artifact: outputs
       timeout: 30
@@ -60,24 +67,37 @@ jobs:
         export HF_HOME="$RUNNER_TEMP/hf_home"
         export HF_DATASETS_CACHE="$RUNNER_TEMP/hf_home/datasets"
 
-        DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1 || true)
-        echo "CUDA driver version: ${DRIVER_VERSION}"
+        if [[ "${{ matrix.gpu-arch-type }}" == "cuda" ]]; then
+          DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1 || true)
+          echo "CUDA driver version: ${DRIVER_VERSION}"
+        fi
 
         pip config --user set global.progress_bar off
 
+        TORCH_SPEC="torch"
+        if [ -n "${{ matrix.torch-version }}" ]; then
+          TORCH_SPEC="torch==${{ matrix.torch-version }}"
+        fi
         python -m pip install --force-reinstall --pre \
-          torch --index-url ${{ matrix.index-url }}
+          "${TORCH_SPEC}" --index-url ${{ matrix.index-url }}
+
+        if [[ "${{ matrix.gpu-arch-type }}" == "rocm" ]]; then
+          export HIPBLASLT_TENSILE_LIBPATH="$(python -c 'import os, torch; print(os.path.join(os.path.dirname(torch.__file__), "lib", "hipblaslt", "library"))')"
+          echo "HIPBLASLT_TENSILE_LIBPATH=${HIPBLASLT_TENSILE_LIBPATH}"
+        fi
+
         USE_CPP=0 python -m pip install --pre torchao --index-url ${{ matrix.index-url }}
 
-        mkdir -p "$RUNNER_TEMP/artifacts-to-be-uploaded"
+        sudo mkdir -p "$RUNNER_TEMP/artifacts-to-be-uploaded"
+        sudo chown -R $(id -u):$(id -g) "$RUNNER_TEMP/artifacts-to-be-uploaded"
 
         python -m tests.integration_tests.run_tests \
-          --gpu_arch_type cuda \
+          --gpu_arch_type ${{ matrix.gpu-arch-type }} \
           --test_suite features_fake_pg \
           --ngpu 1 \
           "$RUNNER_TEMP/artifacts-to-be-uploaded"
 
-        rm -rf $RUNNER_TEMP/artifacts-to-be-uploaded/*/checkpoint
+        rm -rf "$RUNNER_TEMP"/artifacts-to-be-uploaded/*/checkpoint
         rm -rf artifacts-to-be-uploaded/*/checkpoint
 
   # Step 1: Dynamically compute the matrix based on conditions
@@ -86,12 +106,13 @@ jobs:
     if: github.repository_owner == 'pytorch' || github.event_name != 'schedule'
     uses: ./.github/workflows/set-matrix.yaml
     with:
-      gpu-arch: cuda
+      gpu-arch: ${{ inputs.gpu-arch || 'cuda' }}
 
   # Step 2: Use the dynamic matrix in the build-test job
   features-real-pg:
     name: 8 GPU Features (Real PG)
     needs: set-matrix-real-pg
+    if: ${{ needs.set-matrix-real-pg.outputs.matrix != '' && fromJSON(needs.set-matrix-real-pg.outputs.matrix).include[0] != null }}
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     strategy:
       fail-fast: false
@@ -111,9 +132,10 @@ jobs:
         CONDA_ENV=$(conda env list --json | jq -r ".envs | .[-1]")
         conda activate "${CONDA_ENV}"
 
-        # Log CUDA driver version for debugging.
-        DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1 || true)
-        echo "CUDA driver version: ${DRIVER_VERSION}"
+        if [[ "${{ matrix.gpu-arch-type }}" == "cuda" ]]; then
+          DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1 || true)
+          echo "CUDA driver version: ${DRIVER_VERSION}"
+        fi
 
         pip config --user set global.progress_bar off
 
@@ -131,8 +153,14 @@ jobs:
         # if [[ "${{ matrix.gpu-arch-type }}" == "cuda" ]]; then
         #   python -m pip install --pre torchcomms --index-url ${{ matrix.index-url }}
         # fi
+
         end=$(date +%s)
         echo "pip install torch took $((end - start)) seconds"
+
+        if [[ "${{ matrix.gpu-arch-type }}" == "rocm" ]]; then
+          export HIPBLASLT_TENSILE_LIBPATH="$(python -c 'import os, torch; print(os.path.join(os.path.dirname(torch.__file__), "lib", "hipblaslt", "library"))')"
+          echo "HIPBLASLT_TENSILE_LIBPATH=${HIPBLASLT_TENSILE_LIBPATH}"
+        fi
 
         start=$(date +%s)
         USE_CPP=0 python -m pip install --pre torchao --index-url ${{ matrix.index-url }}
@@ -149,8 +177,12 @@ jobs:
         sudo mkdir -p "comm_traces"
         sudo chown -R $(id -u):$(id -g) "comm_traces"
 
-        python -m tests.integration_tests.run_tests --gpu_arch_type ${{ matrix.gpu-arch-type }} --test_suite features_real_pg $RUNNER_TEMP/artifacts-to-be-uploaded --ngpu 8
+        python -m tests.integration_tests.run_tests \
+          --gpu_arch_type ${{ matrix.gpu-arch-type }} \
+          --test_suite features_real_pg \
+          "$RUNNER_TEMP/artifacts-to-be-uploaded" \
+          --ngpu 8
 
         # Cleanup the checkpoints so that we don't waste network bandwidth and time.
-        rm -rf $RUNNER_TEMP/artifacts-to-be-uploaded/*/checkpoint
+        rm -rf "$RUNNER_TEMP"/artifacts-to-be-uploaded/*/checkpoint
         rm -rf artifacts-to-be-uploaded/*/checkpoint

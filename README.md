@@ -53,7 +53,7 @@ We look forward to your contributions!
 | Hardware | Integration Tests | Unit Tests |
 | --- | --- | --- |
 | NVIDIA GPU | [![Feature Tests](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_features.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_features.yaml?query=branch%3Amain) [![Model Tests](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_models.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_models.yaml?query=branch%3Amain) [![H100 Integration Tests](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_h100.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu_h100.yaml?query=branch%3Amain) | [![GPU Unit Tests](https://github.com/pytorch/torchtitan/actions/workflows/unit_test_gpu.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/unit_test_gpu.yaml?query=branch%3Amain) |
-| AMD GPU | [![AMD Feature Tests](https://img.shields.io/badge/AMD_Feature_Tests-disabled-lightgrey)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_amd.yaml?query=branch%3Amain) | - |
+| AMD GPU | [![AMD Feature Tests](https://img.shields.io/badge/AMD_Feature_Tests-disabled-lightgrey)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_features_amd.yaml?query=branch%3Amain) | - |
 
 ## Llama 3.1 training
 

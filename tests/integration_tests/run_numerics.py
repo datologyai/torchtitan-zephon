@@ -48,6 +48,8 @@ def build_1gpu_numerics_test_list() -> dict[str, str]:
     # separate follow-up coverage; Kimi's bicubic CUDA backward is currently
     # incompatible with deterministic mode. Flux is deferred because its
     # unsharded FP32 T5-XXL encoder does not fit on a 24 GB A10G.
+    # Qwen3.5 is deferred until FLA chunked autotuning is bitwise stable across
+    # fresh A10G runners.
     return {
         "deepseek_v3": "deepseek_v3_debugmodel",
         "gpt_oss": "gpt_oss_debugmodel_flex",
@@ -55,7 +57,6 @@ def build_1gpu_numerics_test_list() -> dict[str, str]:
         "llama3": "llama3_debugmodel",
         "muse_glimmer": "muse_glimmer_debugmodel",
         "qwen3": "qwen3_debugmodel",
-        "qwen3_5": "qwen35_debugmodel",
     }
 
 
