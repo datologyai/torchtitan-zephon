@@ -32,8 +32,17 @@ class OverrideDefinitions:
         return self.test_descr
 
 
+# Tests that Fake PG cannot run correctly for reasons their CLI overrides do
+# not express.
+# TODO: spmd_types plus AC recompute is broken under Fake PG (issue #TBD).
+_FAKE_PG_INCOMPATIBLE = frozenset({"2d_eager_spmd_types"})
+
+
 def requires_real_pg(test: OverrideDefinitions) -> bool:
-    """Return whether CLI overrides require communication between real ranks."""
+    """Return whether a test requires communication between real ranks."""
+    if test.test_name in _FAKE_PG_INCOMPATIBLE:
+        return True
+
     for variant in test.override_args:
         cli_args = [
             cli_arg for override in variant for cli_arg in shlex.split(override)

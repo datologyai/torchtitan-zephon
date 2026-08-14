@@ -1,3 +1,7 @@
+# module: llama3
+# config: llama3_debugmodel
+# ngpu: 8
+# step loss
 1 8.048333168029785
 2 7.7511491775512695
 3 7.032463073730469

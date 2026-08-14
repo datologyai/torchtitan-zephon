@@ -14,7 +14,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 
 from torchtitan.tools.logging import logger
 
-from tests.integration_tests import OverrideDefinitions
+from tests.integration_tests import OverrideDefinitions, requires_real_pg
 from tests.integration_tests.features import (
     build_fake_pg_features_test_list,
     build_real_pg_features_test_list,
@@ -118,7 +118,6 @@ def run_single_test(
     # ``gpu_ids`` is set only in parallel mode; sequential runs leave the
     # child process to use all visible GPUs.
     gpu_ids: list[int] | None = None,
-    use_fake_pg: bool = False,
 ):
     # run_test supports sequence of tests.
     test_name = test_flavor.test_name
@@ -143,7 +142,7 @@ def run_single_test(
             cmd += f"MODULE={module} "
         if config is not None:
             cmd += f"CONFIG={config} "
-        if use_fake_pg:
+        if not requires_real_pg(test_flavor):
             cmd += "COMM_MODE=fake_backend "
         cmd += (
             f"{gpu_env_prefix}NGPU={test_flavor.ngpu} LOG_RANK={all_ranks} "
@@ -156,11 +155,6 @@ def run_single_test(
         cmd += " " + dump_folder_arg
         if override_arg:
             cmd += " " + " ".join(override_arg)
-        if use_fake_pg and not any(
-            arg.startswith("activation-checkpoint:") for arg in override_arg
-        ):
-            cmd += " activation-checkpoint:none"
-
         start_ts = time.strftime("%Y-%m-%d %H:%M:%S")
         result = _run_cmd(cmd, timeout=test_flavor.timeout)
         returncode = result.returncode
@@ -193,8 +187,6 @@ def run_single_test(
 def _filter_tests(
     args,
     test_list: list[OverrideDefinitions],
-    *,
-    use_fake_pg: bool = False,
 ) -> tuple[list[OverrideDefinitions], list[OverrideDefinitions]]:
     """Filter tests by --test_name / --exclude / disabled / arch / ngpu.
 
@@ -216,7 +208,7 @@ def _filter_tests(
             and test_flavor.skip_rocm_test
         ):
             continue
-        if not use_fake_pg and args.ngpu < test_flavor.ngpu:
+        if requires_real_pg(test_flavor) and args.ngpu < test_flavor.ngpu:
             skipped_ngpu.append(test_flavor)
             continue
         runnable.append(test_flavor)
@@ -229,10 +221,9 @@ def run_tests(
     module=None,
     config=None,
     parallel: bool = True,
-    use_fake_pg: bool = False,
 ):
     """Run all integration tests to test the core features of TorchTitan."""
-    runnable, skipped_ngpu = _filter_tests(args, test_list, use_fake_pg=use_fake_pg)
+    runnable, skipped_ngpu = _filter_tests(args, test_list)
     for test_flavor in skipped_ngpu:
         logger.info(
             f"Skipping test {test_flavor.test_name} that requires {test_flavor.ngpu} gpus,"
@@ -242,7 +233,7 @@ def run_tests(
     failed_tests: list[tuple[str, str]] = []
 
     def physical_ngpu(test_flavor: OverrideDefinitions) -> int:
-        return 1 if use_fake_pg else test_flavor.ngpu
+        return test_flavor.ngpu if requires_real_pg(test_flavor) else 1
 
     if parallel and runnable:
         # Schedule tests concurrently, packing them onto a fixed pool of
@@ -271,7 +262,6 @@ def run_tests(
                     module,
                     config,
                     gpu_ids=gpus,
-                    use_fake_pg=use_fake_pg,
                 )
             finally:
                 pool.release(gpus)
@@ -291,13 +281,7 @@ def run_tests(
     else:
         for test_flavor in runnable:
             try:
-                run_single_test(
-                    test_flavor,
-                    args.output_dir,
-                    module,
-                    config,
-                    use_fake_pg=use_fake_pg,
-                )
+                run_single_test(test_flavor, args.output_dir, module, config)
             except Exception as e:
                 logger.error(str(e))
                 failed_tests.append((test_flavor.test_name, str(e)))
@@ -385,8 +369,6 @@ def main():
     )
     args = parser.parse_args()
 
-    use_fake_pg = args.test_suite.endswith("_fake_pg")
-
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
     if os.listdir(args.output_dir):
@@ -397,12 +379,7 @@ def main():
     ), f"Unknown test suite {args.test_suite}"
 
     test_list = _TEST_SUITES_FUNCTION[args.test_suite]()
-    run_tests(
-        args,
-        test_list,
-        parallel=args.parallel,
-        use_fake_pg=use_fake_pg,
-    )
+    run_tests(args, test_list, parallel=args.parallel)
 
 
 if __name__ == "__main__":

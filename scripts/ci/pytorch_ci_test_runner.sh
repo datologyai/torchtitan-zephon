@@ -30,20 +30,32 @@ fi
 COMMAND="$1"
 shift
 
+# Run both tiers so every test in the suite stays covered. Each tier needs its
+# own subdirectory because run_tests.py requires an empty output directory.
 case "$COMMAND" in
     feature_tests)
+        python -m tests.integration_tests.run_tests \
+            --test_suite features_fake_pg \
+            --exclude "cpu_offload+opt_in_bwd+TP+DP+CP" \
+            --ngpu "$NGPU" \
+            "$OUTPUT_DIR/features_fake_pg"
         python -m tests.integration_tests.run_tests \
             --test_suite features_real_pg \
             --exclude "cpu_offload+opt_in_bwd+TP+DP+CP" \
             --ngpu "$NGPU" \
-            "$OUTPUT_DIR"
+            "$OUTPUT_DIR/features_real_pg"
         ;;
     model_tests)
+        python -m tests.integration_tests.run_tests \
+            --test_suite models_fake_pg \
+            --exclude "qwen3_5_moe_fsdp+tp+ep+pp_spmd_types" \
+            --ngpu "$NGPU" \
+            "$OUTPUT_DIR/models_fake_pg"
         python -m tests.integration_tests.run_tests \
             --test_suite models_real_pg \
             --exclude "qwen3_5_moe_fsdp+tp+ep+pp_spmd_types" \
             --ngpu "$NGPU" \
-            "$OUTPUT_DIR"
+            "$OUTPUT_DIR/models_real_pg"
         ;;
     *)
         echo "Unknown command: $COMMAND"

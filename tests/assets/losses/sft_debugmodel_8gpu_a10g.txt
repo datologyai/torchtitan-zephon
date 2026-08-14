@@ -1,3 +1,7 @@
+# module: llama3
+# config: sft_debugmodel
+# ngpu: 8
+# step loss
 1 8.296810150146484
 2 7.725587844848633
 3 6.295645713806152

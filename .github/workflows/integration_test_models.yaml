@@ -77,7 +77,6 @@ jobs:
         # the A10G golden.
         python -m tests.integration_tests.run_numerics \
           --test_suite 1gpu \
-          --import-result tests/assets/losses/model_numerics_a10g.json \
           "$RUNNER_TEMP/artifacts-to-be-uploaded/model_numerics"
 
         # Stage 2: model and infrastructure composability with Fake PG.

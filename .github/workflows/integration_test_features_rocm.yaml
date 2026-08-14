@@ -1,4 +1,4 @@
-name: Integration Tests - Features (AMD)
+name: Integration Tests - Features (ROCm)
 
 on:
   push:

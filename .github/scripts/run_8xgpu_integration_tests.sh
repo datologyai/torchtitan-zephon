@@ -5,23 +5,22 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# Shared setup + run for the 8-GPU integration test suite. The NVIDIA workflow
-# runs it on CUDA through linux_job_v3, while the AMD workflow runs it on ROCm
-# through linux_job_v2. The only architecture-specific setup is the ROCm
-# HIPBLASLT export below.
+# Shared setup + run for the H100 integration test suite. Both jobs in
+# integration_test_features_h100.yaml call this -- the CUDA build-test on
+# linux_job_v3 and the ROCm build-test-rocm on linux_job_v2 -- with GPU_ARCH_TYPE
+# set accordingly. The only arch-specific step is the ROCm HIPBLASLT export
+# below, a no-op on CUDA.
 #
 # The calling workflow passes the matrix values as env vars:
 #   INDEX_URL      torch/torchao --index-url (required)
 #   GPU_ARCH_TYPE  "cuda" or "rocm" (required)
 #   TORCH_VERSION  torch version pin, empty for the latest nightly (optional)
-#   TEST_SUITE     integration suite, defaults to "h100" (optional)
 
 set -eux
 
 : "${INDEX_URL:?INDEX_URL must be set}"
 : "${GPU_ARCH_TYPE:?GPU_ARCH_TYPE must be set}"
 TORCH_VERSION="${TORCH_VERSION:-}"
-TEST_SUITE="${TEST_SUITE:-h100}"
 
 ARTIFACTS="$RUNNER_TEMP/artifacts-to-be-uploaded"
 
@@ -72,8 +71,9 @@ else
   mkdir -p "${ARTIFACTS}"
 fi
 
-# Install DeepEP only for the CUDA H100 suite's HybridEP test.
-if [[ "${TEST_SUITE}" == "h100" && "${GPU_ARCH_TYPE}" != "rocm" ]]; then
+# Install DeepEP for the HybridEP integration test. DeepEP (NVSHMEM) is
+# CUDA-only, so skip it on ROCm.
+if [[ "${GPU_ARCH_TYPE}" != "rocm" ]]; then
   bash /install_deepep.sh
 fi
 
@@ -81,5 +81,5 @@ fi
 # Disable Nvlink Sharp. The CI machine seems to be unstable state to support
 # NLVS according to several CI runs.
 # DeepEP needs CUDA_HOME specified to JIT kernels.
-CUDA_HOME=/usr/local/cuda NCCL_NVLS_ENABLE=0 TORCH_SHOW_CPP_STACKTRACES=1 python -m tests.integration_tests.run_tests --test_suite "${TEST_SUITE}" --gpu_arch_type "${GPU_ARCH_TYPE}" "${ARTIFACTS}" --ngpu 8
+CUDA_HOME=/usr/local/cuda NCCL_NVLS_ENABLE=0 TORCH_SHOW_CPP_STACKTRACES=1 python -m tests.integration_tests.run_tests --test_suite h100 --gpu_arch_type "${GPU_ARCH_TYPE}" "${ARTIFACTS}" --ngpu 8
 rm -rf "${ARTIFACTS}"/*/checkpoint

@@ -76,8 +76,6 @@ _TEST_SUITES_FUNCTION = {
 def run_single_test(
     test_flavor: OverrideDefinitions,
     output_dir: str,
-    *,
-    use_fake_pg: bool = False,
 ):
     # run_test supports sequence of tests.
     test_name = test_flavor.test_name
@@ -98,7 +96,9 @@ def run_single_test(
     all_ranks = ",".join(map(str, range(test_flavor.ngpu)))
 
     for idx, override_arg in enumerate(test_flavor.override_args):
-        fake_pg_prefix = "COMM_MODE=fake_backend " if use_fake_pg else ""
+        fake_pg_prefix = (
+            "" if requires_real_pg(test_flavor) else "COMM_MODE=fake_backend "
+        )
         cmd = (
             f"{fake_pg_prefix}NGPU={test_flavor.ngpu} "
             f"LOG_RANK={all_ranks} ./run_train.sh"
@@ -138,8 +138,6 @@ def run_single_test(
 def run_tests(
     args,
     test_list: list[OverrideDefinitions],
-    *,
-    use_fake_pg: bool = False,
 ):
     """Run all integration tests to test the core features of TorchTitan
     Override the run_tests function in run_tests.py because FLUX model
@@ -151,17 +149,13 @@ def run_tests(
             continue
 
         # Check if we have enough GPUs
-        if not use_fake_pg and args.ngpu < test_flavor.ngpu:
+        if requires_real_pg(test_flavor) and args.ngpu < test_flavor.ngpu:
             logger.info(
                 f"Skipping test {test_flavor.test_name} that requires {test_flavor.ngpu} gpus,"
                 f" because --ngpu arg is {args.ngpu}"
             )
         else:
-            run_single_test(
-                test_flavor,
-                args.output_dir,
-                use_fake_pg=use_fake_pg,
-            )
+            run_single_test(test_flavor, args.output_dir)
 
 
 def main():
@@ -179,7 +173,6 @@ def main():
         choices=["flux_fake_pg", "flux_real_pg"],
     )
     args = parser.parse_args()
-    use_fake_pg = args.test_suite.endswith("_fake_pg")
 
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
@@ -187,7 +180,7 @@ def main():
         raise RuntimeError("Please provide an empty output directory.")
 
     test_list = _TEST_SUITES_FUNCTION[args.test_suite]()
-    run_tests(args, test_list, use_fake_pg=use_fake_pg)
+    run_tests(args, test_list)
 
 
 if __name__ == "__main__":

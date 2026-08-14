@@ -1,3 +1,7 @@
+# module: qwen3
+# config: qwen3_moe_debug
+# ngpu: 8
+# step loss
 1 8.039487838745117
 2 7.345431804656982
 3 5.886456489562988
