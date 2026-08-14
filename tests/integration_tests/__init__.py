@@ -27,20 +27,17 @@ class OverrideDefinitions:
     disabled: bool = False
     skip_rocm_test: bool = False
     timeout: int | None = None
+    # Clear for a test that must run on a real process group: Fake PG cannot
+    # run it correctly, or it is this model's canonical distributed run.
+    use_fake_pg: bool = True
 
     def __repr__(self):
         return self.test_descr
 
 
-# Tests that Fake PG cannot run correctly for reasons their CLI overrides do
-# not express.
-# TODO: spmd_types plus AC recompute is broken under Fake PG (issue #TBD).
-_FAKE_PG_INCOMPATIBLE = frozenset({"2d_eager_spmd_types"})
-
-
 def requires_real_pg(test: OverrideDefinitions) -> bool:
     """Return whether a test requires communication between real ranks."""
-    if test.test_name in _FAKE_PG_INCOMPATIBLE:
+    if not test.use_fake_pg:
         return True
 
     for variant in test.override_args:

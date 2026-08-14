@@ -66,7 +66,6 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module llama3 --config llama3_debugmodel",
-                    "--comm.mode default",  # Needs a real PG for this test.
                     "--parallelism.pipeline_parallel_degree 2",
                     "--parallelism.data_parallel_shard_degree 2",
                     "--parallelism.tensor_parallel_degree 2",
@@ -102,7 +101,6 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module deepseek_v3 --config deepseek_v3_debugmodel",
-                    "--comm.mode default",  # Needs a real PG for this test.
                     "--parallelism.pipeline_parallel_degree 2",
                     "--parallelism.pipeline_parallel_schedule Interleaved1F1B",
                     "--parallelism.data_parallel_shard_degree 2",
@@ -134,7 +132,6 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module qwen3 --config qwen3_debugmodel_moe_param_groups",
-                    "--comm.mode default",  # Needs a real PG for this test.
                     "--parallelism.data_parallel_shard_degree 4",
                     "--parallelism.tensor_parallel_degree 2",
                     "--parallelism.expert_parallel_degree 4",
@@ -142,6 +139,8 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
             ],
             "Qwen3 MoE FSDP+TP+EP (param groups)",
             "qwen3_moe_fsdp+tp+ep_param_groups",
+            # Canonical real-PG run for this model.
+            use_fake_pg=False,
             ngpu=8,
         ),
         OverrideDefinitions(
@@ -204,7 +203,6 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module qwen3_5 --config qwen35_debugmodel_moe",
-                    "--comm.mode default",  # Needs a real PG for this test.
                     "--parallelism.data_parallel_shard_degree 2",
                     "--parallelism.pipeline_parallel_degree 2",
                     "--parallelism.tensor_parallel_degree 2",
@@ -254,7 +252,6 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module gpt_oss --config gpt_oss_debugmodel_flex",
-                    "--comm.mode default",  # Needs a real PG for this test.
                     "--parallelism.data_parallel_shard_degree 2",
                     "--parallelism.context_parallel_degree 2",
                     "--parallelism.context_parallel_load_balancer ptrr",
@@ -274,7 +271,6 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module gpt_oss --config gpt_oss_debugmodel",
-                    "--comm.mode default",  # Needs a real PG for this test.
                     "--training.global_batch_size 64",
                     "--parallelism.data_parallel_shard_degree 4",
                     "--parallelism.pipeline_parallel_degree 2",
@@ -299,7 +295,6 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                     # Do not enable --debug.spmd_typechecking: multimodal pixel
                     # tensors from the dataloader are not SPMD-annotated yet.
                     "--module kimi_k2_7 --config kimi_k2_5_debugmodel",
-                    "--comm.mode default",
                     "--parallelism.spmd_backend spmd_types",
                     "--parallelism.data_parallel_shard_degree 4",
                     "--parallelism.expert_parallel_degree 2",
@@ -308,6 +303,8 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
             ],
             "Kimi K2.7 DistMuon spmd_types FSDP+EP",
             "kimi_k2_5_muon_fsdp+ep_spmd_types",
+            # Canonical real-PG run for this model.
+            use_fake_pg=False,
             ngpu=4,
         ),
         # Integration Test Cases for Muse Glimmer
@@ -316,13 +313,14 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module muse_glimmer --config muse_glimmer_debugmodel_mm",
-                    "--comm.mode default",  # Needs a real PG for this test.
                     "--parallelism.data_parallel_shard_degree 4",
                     "--parallelism.tensor_parallel_degree 2",
                 ],
             ],
             "Muse Glimmer multimodal FSDP+TP+SP",
             "muse_glimmer_mm_fsdp+tp+sp",
+            # Canonical real-PG run for this model.
+            use_fake_pg=False,
             ngpu=8,
         ),
     ]

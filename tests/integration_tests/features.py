@@ -180,6 +180,8 @@ def build_features_test_list() -> list[OverrideDefinitions]:
             ],
             "2D eager (ChunkedLossWrapper + standard CE loss with TP+loss_parallel)",
             "2d_eager",
+            # TODO: spmd_types plus AC recompute is broken under Fake PG.
+            use_fake_pg=False,
         ),
         OverrideDefinitions(
             [
@@ -607,13 +609,14 @@ def build_features_test_list() -> list[OverrideDefinitions]:
                 [
                     "--training.disable_cuda_graphs",
                     "--module llama3 --config llama3_debugmodel_varlen_attn",
-                    "--comm.mode default",  # Needs a real PG for AC recompute.
                     "--parallelism.data_parallel_shard_degree=4",
                     "activation-checkpoint:selective",
                 ]
             ],
             "FSDP+VARLEN_ATTN + per op SAC",
             "fsdp+varlen_attn+per_op_sac",
+            # TODO: spmd_types plus AC recompute is broken under Fake PG.
+            use_fake_pg=False,
             ngpu=4,
             skip_rocm_test=True,
         ),
