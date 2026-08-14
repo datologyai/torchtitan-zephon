@@ -887,6 +887,81 @@ class TestCheckpointManager(unittest.TestCase):
 
         manager.maybe_wait_for_saving()
 
+    def fake_dcp_save(self, state_dict: dict, checkpoint_id: str, storage_writer=None):
+        """fake_save plus the metadata file that marks a complete DCP save."""
+        self.fake_save(state_dict, checkpoint_id, storage_writer)
+        open(os.path.join(checkpoint_id, ".metadata"), "w").close()
+
+    def _build_manager(self) -> CheckpointManager:
+        return CheckpointManager(
+            dataloader=self.data_loader,
+            model_parts=self.model_parts,
+            optimizers=self.optimizers,
+            lr_schedulers=self.lr_schedulers,
+            states=self.states,
+            config=self.trainer_config.checkpoint,
+            sd_adapter=None,
+            base_folder=self.trainer_config.dump_folder,
+        )
+
+    @mock.patch("torch.distributed.get_rank", return_value=0)
+    @mock.patch("torchtitan.components.checkpoint.dcp.save")
+    def test_save_for_async_eval_saves_model_only(self, mock_save, mock_rank):
+        mock_save.side_effect = self.fake_dcp_save
+        manager = self._build_manager()
+
+        checkpoint_id, is_temporary = manager.save_for_async_eval(5)
+
+        self.assertTrue(is_temporary)
+        self.assertEqual(
+            checkpoint_id, os.path.join(self.test_folder, "async_eval", "step-5")
+        )
+        saved_state_dict = mock_save.call_args.args[0]
+        self.assertNotIn("trainer", saved_state_dict)
+        self.assertEqual(
+            sorted(saved_state_dict.keys()), sorted(self.model_part.state_dict().keys())
+        )
+        manager.close()
+
+    @mock.patch("torch.distributed.get_rank", return_value=0)
+    @mock.patch("torchtitan.components.checkpoint.dcp.save")
+    def test_save_for_async_eval_reuses_existing_checkpoints(
+        self, mock_save, mock_rank
+    ):
+        mock_save.side_effect = self.fake_dcp_save
+        manager = self._build_manager()
+
+        manager.save(curr_step=1)
+        checkpoint_id, is_temporary = manager.save_for_async_eval(1)
+        self.assertEqual(checkpoint_id, os.path.join(self.test_folder, "step-1"))
+        self.assertFalse(is_temporary)
+
+        # The eval checkpoint of an earlier eval at the same step is reused too.
+        manager.save_for_async_eval(2)
+        save_count = mock_save.call_count
+        checkpoint_id, is_temporary = manager.save_for_async_eval(2)
+        self.assertEqual(
+            checkpoint_id, os.path.join(self.test_folder, "async_eval", "step-2")
+        )
+        self.assertTrue(is_temporary)
+        self.assertEqual(mock_save.call_count, save_count)
+        manager.close()
+
+    def test_save_for_async_eval_requires_checkpointing(self):
+        manager = CheckpointManager(
+            config=CheckpointManager.Config(enable=False),
+            dataloader=self.data_loader,
+            model_parts=self.model_parts,
+            optimizers=self.optimizers,
+            lr_schedulers=self.lr_schedulers,
+            states=self.states,
+            sd_adapter=None,
+            base_folder=self.trainer_config.dump_folder,
+        )
+
+        with self.assertRaisesRegex(ValueError, "when disabled"):
+            manager.save_for_async_eval(5)
+
 
 class TestConfigPostInit(unittest.TestCase):
     def test_valid_default_config(self):

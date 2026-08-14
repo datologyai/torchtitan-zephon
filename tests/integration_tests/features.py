@@ -689,6 +689,22 @@ def build_features_test_list() -> list[OverrideDefinitions]:
             ngpu=1,
             timeout=30,
         ),
+        OverrideDefinitions(
+            [
+                [
+                    "--checkpoint.enable",
+                    "--async_eval.enable",
+                    "--async_eval.freq 5",
+                    "--async_eval.raise_on_failure",
+                    # The eval job runs on the GPU of this test, so keep it small.
+                    "--async_eval.extra_args='--validator.dataloader.dataset "
+                    "c4_test --validator.steps 2'",
+                ],
+            ],
+            "Async eval launched from the training loop",
+            "async_eval",
+            ngpu=1,
+        ),
     ]
 
     return [
