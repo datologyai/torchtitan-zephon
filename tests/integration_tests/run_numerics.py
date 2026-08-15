@@ -71,7 +71,7 @@ def build_8gpu_numerics_test_list(output_dir: Path) -> dict[str, tuple[str, ...]
         "llama3_fsdp": (
             f"--baseline-options={llama_fsdp}",
             f"--job-dump-folder={output_dir / 'llama3_fsdp'}",
-            f"--import-result={LOSSES / 'llama3_8gpu_a10g.txt'}",
+            f"--export-result={output_dir / 'llama3_8gpu_a10g.txt'}",
             "--metrics=loss,grad_norm",
             "--assert-equal",
             "--steps=100",
@@ -120,7 +120,7 @@ def run_1gpu_numerics(output_dir: Path) -> None:
                 f"--test-config={config}",
                 f"--test-options={SINGLE_GPU_OPTIONS}",
                 f"--job-dump-folder={output_dir / model_name}",
-                f"--import-result={LOSSES / f'{model_name}_1gpu_a10g.txt'}",
+                f"--export-result={output_dir / f'{model_name}_1gpu_a10g.txt'}",
                 "--metrics=loss,grad_norm",
                 "--no-seed-checkpoint",
                 "--assert-equal",
