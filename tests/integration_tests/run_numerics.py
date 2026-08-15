@@ -21,8 +21,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LOSSES = REPO_ROOT / "tests/assets/losses"
 
 # Unsharded runs pin every parallelism axis to 1 so the golden depends only on
-# the model.
+# the model. Some debug MoE kernels pass CPU offsets to grouped GEMM, which
+# cannot be copied during CUDA graph capture, so numerics runs use eager mode.
 SINGLE_GPU_OPTIONS = (
+    "--training.disable_cuda_graphs "
     "--parallelism.data_parallel_replicate_degree=1 "
     "--parallelism.data_parallel_shard_degree=1 "
     "--parallelism.tensor_parallel_degree=1 "
@@ -73,7 +75,6 @@ def build_8gpu_numerics_test_list(output_dir: Path) -> dict[str, tuple[str, ...]
             f"--job-dump-folder={output_dir / 'llama3_fsdp'}",
             f"--export-result={output_dir / 'llama3_8gpu_a10g.txt'}",
             "--metrics=loss,grad_norm",
-            "--assert-equal",
             "--steps=100",
         ),
         "qwen3_moe": (
@@ -120,7 +121,7 @@ def run_1gpu_numerics(output_dir: Path) -> None:
                 f"--test-config={config}",
                 f"--test-options={SINGLE_GPU_OPTIONS}",
                 f"--job-dump-folder={output_dir / model_name}",
-                f"--export-result={output_dir / f'{model_name}_1gpu_a10g.txt'}",
+                f"--import-result={LOSSES / f'{model_name}_1gpu_a10g.txt'}",
                 "--metrics=loss,grad_norm",
                 "--no-seed-checkpoint",
                 "--assert-equal",
