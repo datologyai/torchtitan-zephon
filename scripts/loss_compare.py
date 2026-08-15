@@ -901,7 +901,7 @@ def assert_losses_equal(
         log_print()
         sys.exit(1)
     else:
-        if test_losses is not None and import_result:
+        if test_losses is not None and imported_losses is not None:
             log_print(
                 "All losses are equal (baseline, test, and imported). "
                 "Assertion passed!"

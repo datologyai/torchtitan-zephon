@@ -21,17 +21,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LOSSES = REPO_ROOT / "tests/assets/losses"
 
 # Unsharded runs pin every parallelism axis to 1 so the golden depends only on
-# the model. Activation checkpointing is off because it is not part of what
-# these goldens guard, and the modifier must stay last (tyro subcommand).
+# the model.
 SINGLE_GPU_OPTIONS = (
-    "--training.disable_cuda_graphs "
     "--parallelism.data_parallel_replicate_degree=1 "
     "--parallelism.data_parallel_shard_degree=1 "
     "--parallelism.tensor_parallel_degree=1 "
     "--parallelism.context_parallel_degree=1 "
     "--parallelism.pipeline_parallel_degree=1 "
-    "--parallelism.expert_parallel_degree=1 "
-    "activation-checkpoint:none"
+    "--parallelism.expert_parallel_degree=1"
 )
 
 
@@ -75,6 +72,7 @@ def build_8gpu_numerics_test_list(output_dir: Path) -> dict[str, tuple[str, ...]
             f"--baseline-options={llama_fsdp}",
             f"--job-dump-folder={output_dir / 'llama3_fsdp'}",
             f"--import-result={LOSSES / 'llama3_8gpu_a10g.txt'}",
+            "--metrics=loss,grad_norm",
             "--assert-equal",
             "--steps=100",
         ),

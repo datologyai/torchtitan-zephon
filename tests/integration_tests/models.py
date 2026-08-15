@@ -7,7 +7,7 @@
 
 import dataclasses
 
-from tests.integration_tests import OverrideDefinitions, requires_real_pg
+from tests.integration_tests import OverrideDefinitions
 
 
 def _enable_spmd_backend(t: OverrideDefinitions, backend: str) -> OverrideDefinitions:
@@ -326,13 +326,3 @@ def build_model_tests_list() -> list[OverrideDefinitions]:
     ]
 
     return [_enable_spmd_backend(t, "spmd_types") for t in model_tests]
-
-
-def build_fake_pg_model_tests_list() -> list[OverrideDefinitions]:
-    """Build model tests that complete a training step with a fake PG."""
-    return [test for test in build_model_tests_list() if not requires_real_pg(test)]
-
-
-def build_real_pg_model_tests_list() -> list[OverrideDefinitions]:
-    """Build model tests that require a real process group."""
-    return [test for test in build_model_tests_list() if requires_real_pg(test)]

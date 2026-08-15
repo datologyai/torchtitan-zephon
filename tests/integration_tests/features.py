@@ -9,7 +9,7 @@ import dataclasses
 import os
 from collections.abc import Sequence
 
-from tests.integration_tests import OverrideDefinitions, requires_real_pg
+from tests.integration_tests import OverrideDefinitions
 
 
 def _is_pp_only(variant: Sequence[str], ngpu: int) -> bool:
@@ -180,8 +180,6 @@ def build_features_test_list() -> list[OverrideDefinitions]:
             ],
             "2D eager (ChunkedLossWrapper + standard CE loss with TP+loss_parallel)",
             "2d_eager",
-            # TODO: spmd_types plus AC recompute is broken under Fake PG.
-            use_fake_pg=False,
         ),
         OverrideDefinitions(
             [
@@ -615,8 +613,6 @@ def build_features_test_list() -> list[OverrideDefinitions]:
             ],
             "FSDP+VARLEN_ATTN + per op SAC",
             "fsdp+varlen_attn+per_op_sac",
-            # TODO: spmd_types plus AC recompute is broken under Fake PG.
-            use_fake_pg=False,
             ngpu=4,
             skip_rocm_test=True,
         ),
@@ -699,13 +695,3 @@ def build_features_test_list() -> list[OverrideDefinitions]:
     return [
         *[_enable_spmd_backend(t, "spmd_types") for t in integration_tests_flavors],
     ]
-
-
-def build_fake_pg_features_test_list() -> list[OverrideDefinitions]:
-    """Build feature tests that complete a training step with a fake PG."""
-    return [test for test in build_features_test_list() if not requires_real_pg(test)]
-
-
-def build_real_pg_features_test_list() -> list[OverrideDefinitions]:
-    """Build feature tests that require a real process group."""
-    return [test for test in build_features_test_list() if requires_real_pg(test)]

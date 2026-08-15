@@ -15,22 +15,14 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from torchtitan.tools.logging import logger
 
 from tests.integration_tests import OverrideDefinitions, requires_real_pg
-from tests.integration_tests.features import (
-    build_fake_pg_features_test_list,
-    build_real_pg_features_test_list,
-)
+from tests.integration_tests.features import build_features_test_list
 from tests.integration_tests.h100 import build_h100_tests_list
-from tests.integration_tests.models import (
-    build_fake_pg_model_tests_list,
-    build_real_pg_model_tests_list,
-)
+from tests.integration_tests.models import build_model_tests_list
 
 
 _TEST_SUITES_FUNCTION = {
-    "features_fake_pg": build_fake_pg_features_test_list,
-    "features_real_pg": build_real_pg_features_test_list,
-    "models_fake_pg": build_fake_pg_model_tests_list,
-    "models_real_pg": build_real_pg_model_tests_list,
+    "features": build_features_test_list,
+    "models": build_model_tests_list,
     "h100": build_h100_tests_list,
 }
 
@@ -323,15 +315,15 @@ def main():
     )
     parser.add_argument(
         "--test_suite",
-        default="features_fake_pg",
-        choices=[
-            "features_fake_pg",
-            "features_real_pg",
-            "models_fake_pg",
-            "models_real_pg",
-            "h100",
-        ],
+        default="features",
+        choices=["features", "models", "h100"],
         help="Which test suite to run.",
+    )
+    parser.add_argument(
+        "--fake_pg",
+        action="store_true",
+        help="Run the Fake PG tier of the feature or model suite. "
+        "Without this flag, run the Real PG tier.",
     )
     parser.add_argument(
         "--module",
@@ -379,6 +371,10 @@ def main():
     ), f"Unknown test suite {args.test_suite}"
 
     test_list = _TEST_SUITES_FUNCTION[args.test_suite]()
+    if args.test_suite != "h100":
+        test_list = [
+            test for test in test_list if requires_real_pg(test) != args.fake_pg
+        ]
     run_tests(args, test_list, parallel=args.parallel)
 
 

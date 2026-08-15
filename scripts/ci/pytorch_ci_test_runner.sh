@@ -35,24 +35,26 @@ shift
 case "$COMMAND" in
     feature_tests)
         python -m tests.integration_tests.run_tests \
-            --test_suite features_fake_pg \
+            --test_suite features \
+            --fake_pg \
             --exclude "cpu_offload+opt_in_bwd+TP+DP+CP" \
             --ngpu "$NGPU" \
             "$OUTPUT_DIR/features_fake_pg"
         python -m tests.integration_tests.run_tests \
-            --test_suite features_real_pg \
+            --test_suite features \
             --exclude "cpu_offload+opt_in_bwd+TP+DP+CP" \
             --ngpu "$NGPU" \
             "$OUTPUT_DIR/features_real_pg"
         ;;
     model_tests)
         python -m tests.integration_tests.run_tests \
-            --test_suite models_fake_pg \
+            --test_suite models \
+            --fake_pg \
             --exclude "qwen3_5_moe_fsdp+tp+ep+pp_spmd_types" \
             --ngpu "$NGPU" \
             "$OUTPUT_DIR/models_fake_pg"
         python -m tests.integration_tests.run_tests \
-            --test_suite models_real_pg \
+            --test_suite models \
             --exclude "qwen3_5_moe_fsdp+tp+ep+pp_spmd_types" \
             --ngpu "$NGPU" \
             "$OUTPUT_DIR/models_real_pg"
