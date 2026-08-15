@@ -56,7 +56,7 @@ jobs:
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
       docker-image: ${{ matrix.docker-image }}
       repository: pytorch/torchtitan
-      upload-artifact: outputs
+      upload-artifact: features-1gpu-outputs
       timeout: 30
       script: |
         set -eux
@@ -121,7 +121,7 @@ jobs:
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
       docker-image: ${{ matrix.docker-image }}
       repository: pytorch/torchtitan
-      upload-artifact: outputs
+      upload-artifact: features-8gpu-outputs
       timeout: 60
       script: |
         set -eux

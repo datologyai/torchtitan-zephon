@@ -50,7 +50,7 @@ jobs:
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
       docker-image: 308535385114.dkr.ecr.us-east-1.amazonaws.com/torchtitan/${{ matrix.docker-image }}:${{ needs.set-matrix-1gpu.outputs.docker-hash }}
       repository: pytorch/torchtitan
-      upload-artifact: outputs
+      upload-artifact: models-1gpu-outputs
       timeout: 60
       script: |
         set -eux
@@ -113,7 +113,7 @@ jobs:
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
       docker-image: ${{ matrix.docker-image }}
       repository: pytorch/torchtitan
-      upload-artifact: outputs
+      upload-artifact: models-8gpu-outputs
       timeout: 60
       script: |
         set -eux
