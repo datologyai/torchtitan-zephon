@@ -21,10 +21,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LOSSES = REPO_ROOT / "tests/assets/losses"
 
 # Unsharded runs pin every parallelism axis to 1 so the golden depends only on
-# the model. Some debug MoE kernels pass CPU offsets to grouped GEMM, which
-# cannot be copied during CUDA graph capture, so numerics runs use eager mode.
+# the model.
 SINGLE_GPU_OPTIONS = (
-    "--training.disable_cuda_graphs "
     "--parallelism.data_parallel_replicate_degree=1 "
     "--parallelism.data_parallel_shard_degree=1 "
     "--parallelism.tensor_parallel_degree=1 "
@@ -32,6 +30,12 @@ SINGLE_GPU_OPTIONS = (
     "--parallelism.pipeline_parallel_degree=1 "
     "--parallelism.expert_parallel_degree=1"
 )
+
+# DeepSeek's grouped MoE GEMM passes CPU offsets that cannot be copied during
+# CUDA graph capture. Other models retain their configured CUDA graph default.
+SINGLE_GPU_MODEL_OPTIONS = {
+    "deepseek_v3": "--training.disable_cuda_graphs",
+}
 
 
 def build_1gpu_numerics_test_list() -> dict[str, str]:
@@ -73,8 +77,9 @@ def build_8gpu_numerics_test_list(output_dir: Path) -> dict[str, tuple[str, ...]
         "llama3_fsdp": (
             f"--baseline-options={llama_fsdp}",
             f"--job-dump-folder={output_dir / 'llama3_fsdp'}",
-            f"--export-result={output_dir / 'llama3_8gpu_a10g.txt'}",
+            f"--import-result={LOSSES / 'llama3_8gpu_a10g.txt'}",
             "--metrics=loss,grad_norm",
+            "--assert-equal",
             "--steps=100",
         ),
         "qwen3_moe": (
@@ -109,17 +114,23 @@ def _run_loss_compare(test_name: str, options: tuple[str, ...], ngpus: int) -> N
 
 def run_1gpu_numerics(output_dir: Path) -> None:
     for model_name, config in build_1gpu_numerics_test_list().items():
+        options = " ".join(
+            (
+                SINGLE_GPU_OPTIONS,
+                SINGLE_GPU_MODEL_OPTIONS.get(model_name, ""),
+            )
+        ).strip()
         _run_loss_compare(
             model_name,
             (
                 f"--baseline-module={model_name}",
                 f"--baseline-config={config}",
-                f"--baseline-options={SINGLE_GPU_OPTIONS}",
+                f"--baseline-options={options}",
                 # Mirror the test settings so loss_compare stays in
                 # baseline-only mode and runs the model exactly once.
                 f"--test-module={model_name}",
                 f"--test-config={config}",
-                f"--test-options={SINGLE_GPU_OPTIONS}",
+                f"--test-options={options}",
                 f"--job-dump-folder={output_dir / model_name}",
                 f"--import-result={LOSSES / f'{model_name}_1gpu_a10g.txt'}",
                 "--metrics=loss,grad_norm",

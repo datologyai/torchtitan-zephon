@@ -139,16 +139,10 @@ jobs:
         sudo mkdir -p "$RUNNER_TEMP/artifacts-to-be-uploaded"
         sudo chown -R $(id -u):$(id -g) "$RUNNER_TEMP/artifacts-to-be-uploaded"
 
-        # linux_job_v2 executes this script in Docker, while artifact upload
-        # runs on the host. Store the golden under the bind-mounted workspace
-        # so the host-side upload step can collect it after the container exits.
-        sudo mkdir -p artifacts-to-be-uploaded
-        sudo chown -R $(id -u):$(id -g) artifacts-to-be-uploaded
-
         # Stage 1: Guard selected real-distributed loss curves and sharding parity.
         python -m tests.integration_tests.run_numerics \
           --test_suite 8gpu \
-          "artifacts-to-be-uploaded/distributed_numerics"
+          "$RUNNER_TEMP/artifacts-to-be-uploaded/distributed_numerics"
 
         # Stage 2: Run one real-distributed composability configuration per model.
         python -m tests.integration_tests.run_tests \

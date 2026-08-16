@@ -40,6 +40,12 @@ def requires_real_pg(test: OverrideDefinitions) -> bool:
     if not test.use_fake_pg:
         return True
 
+    # TODO: FSDP + selective AC backward recompute has a shard/storage shape
+    # mismatch with Fake PG under spmd_types. Keep the test on a real PG until
+    # that interaction is fixed. Issue #4149
+    if test.test_name == "fsdp+varlen_attn+per_op_sac_spmd_types":
+        return True
+
     for variant in test.override_args:
         cli_args = [
             cli_arg for override in variant for cli_arg in shlex.split(override)
