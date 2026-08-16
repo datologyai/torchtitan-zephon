@@ -148,6 +148,7 @@ jobs:
         python -m tests.integration_tests.run_tests \
           --gpu_arch_type ${{ matrix.gpu-arch-type }} \
           --test_suite models \
+          --real_pg_only \
           --ngpu 8 \
           "$RUNNER_TEMP/artifacts-to-be-uploaded/models"
         python -m tests.integration_tests.flux \

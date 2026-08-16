@@ -63,7 +63,7 @@ pip install -r requirements.txt
 To run the integration tests:
 
 ```bash
-python -m tests.integration_tests.run_tests <output_dir> [--module MODULE] [--config CONFIG] [--test_suite TEST_SUITE] [--test_name TEST_NAME] [--ngpu NGPU]
+python -m tests.integration_tests.run_tests <output_dir> [--module MODULE] [--config CONFIG] [--test_suite TEST_SUITE] [--fake_pg | --real_pg_only] [--test_name TEST_NAME] [--ngpu NGPU]
 ```
 
 Arguments:
@@ -71,20 +71,21 @@ Arguments:
 - `--module`: (Optional) Model module to use for training (default: "llama3"). Passed as `MODULE` env var to `run_train.sh`.
 - `--config`: (Optional) Config function to use for training (default: "llama3_debugmodel"). Passed as `CONFIG` env var to `run_train.sh`.
 - `--test_suite`: (Optional) Specific test suite to run by name (default: "features")
-- `--fake_pg`: (Optional) Run the Fake PG tier of a feature or model suite. Without it, run the Real PG tier.
+- `--fake_pg`: (Optional) Run only Fake-PG-capable tests using Fake PG.
+- `--real_pg_only`: (Optional) Run only tests that require a real process group. Without either PG-selection flag, run every test using real process groups.
 - `--test_name`: (Optional) Specific test to run by name (default: "all")
 - `--ngpu`: (Optional) Number of GPUs to use for testing (default: 8)
 
 Examples:
 ```bash
-# Run fake-PG feature integration tests on one physical GPU
-python -m tests.integration_tests.run_tests test_output --ngpu 1
+# Run every feature test using real process groups
+python -m tests.integration_tests.run_tests test_output --test_suite features --ngpu 8
 
 # Run feature tests with a specific module and config
 python -m tests.integration_tests.run_tests test_output --module llama3 --config llama3_8b
 
-# Run feature tests that require real process groups
-python -m tests.integration_tests.run_tests test_output --test_suite features
+# Run only feature tests that require real process groups
+python -m tests.integration_tests.run_tests test_output --test_suite features --real_pg_only --ngpu 8
 
 # Run a specific fake-PG feature test on one physical GPU
 python -m tests.integration_tests.run_tests test_output --test_suite features --fake_pg --test_name gradient_accumulation_spmd_types --ngpu 1
@@ -92,8 +93,8 @@ python -m tests.integration_tests.run_tests test_output --test_suite features --
 # Run fake-PG model tests on one physical GPU
 python -m tests.integration_tests.run_tests test_output --test_suite models --fake_pg --ngpu 1
 
-# Run model tests that require real process groups
-python -m tests.integration_tests.run_tests test_output --test_suite models --ngpu 8
+# Run only model tests that require real process groups
+python -m tests.integration_tests.run_tests test_output --test_suite models --real_pg_only --ngpu 8
 ```
 
 ### Running Unit Tests

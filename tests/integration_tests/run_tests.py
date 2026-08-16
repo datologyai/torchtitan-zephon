@@ -107,6 +107,8 @@ def run_single_test(
     output_dir: str,
     module: str | None = None,
     config: str | None = None,
+    *,
+    use_fake_pg: bool = False,
     # ``gpu_ids`` is set only in parallel mode; sequential runs leave the
     # child process to use all visible GPUs.
     gpu_ids: list[int] | None = None,
@@ -134,7 +136,7 @@ def run_single_test(
             cmd += f"MODULE={module} "
         if config is not None:
             cmd += f"CONFIG={config} "
-        if not requires_real_pg(test_flavor):
+        if use_fake_pg:
             cmd += "COMM_MODE=fake_backend "
         cmd += (
             f"{gpu_env_prefix}NGPU={test_flavor.ngpu} LOG_RANK={all_ranks} "
@@ -200,7 +202,7 @@ def _filter_tests(
             and test_flavor.skip_rocm_test
         ):
             continue
-        if requires_real_pg(test_flavor) and args.ngpu < test_flavor.ngpu:
+        if not args.fake_pg and args.ngpu < test_flavor.ngpu:
             skipped_ngpu.append(test_flavor)
             continue
         runnable.append(test_flavor)
@@ -225,7 +227,7 @@ def run_tests(
     failed_tests: list[tuple[str, str]] = []
 
     def physical_ngpu(test_flavor: OverrideDefinitions) -> int:
-        return test_flavor.ngpu if requires_real_pg(test_flavor) else 1
+        return 1 if args.fake_pg else test_flavor.ngpu
 
     if parallel and runnable:
         # Schedule tests concurrently, packing them onto a fixed pool of
@@ -253,6 +255,7 @@ def run_tests(
                     args.output_dir,
                     module,
                     config,
+                    use_fake_pg=args.fake_pg,
                     gpu_ids=gpus,
                 )
             finally:
@@ -273,7 +276,13 @@ def run_tests(
     else:
         for test_flavor in runnable:
             try:
-                run_single_test(test_flavor, args.output_dir, module, config)
+                run_single_test(
+                    test_flavor,
+                    args.output_dir,
+                    module,
+                    config,
+                    use_fake_pg=args.fake_pg,
+                )
             except Exception as e:
                 logger.error(str(e))
                 failed_tests.append((test_flavor.test_name, str(e)))
@@ -319,11 +328,17 @@ def main():
         choices=["features", "models", "h100"],
         help="Which test suite to run.",
     )
-    parser.add_argument(
+    pg_mode = parser.add_mutually_exclusive_group()
+    pg_mode.add_argument(
         "--fake_pg",
         action="store_true",
-        help="Run the Fake PG tier of the feature or model suite. "
-        "Without this flag, run the Real PG tier.",
+        help="Run only Fake-PG-capable tests using Fake PG.",
+    )
+    pg_mode.add_argument(
+        "--real_pg_only",
+        action="store_true",
+        help="Run only tests that require a real process group. Without either "
+        "PG-selection flag, run the complete suite using real process groups.",
     )
     parser.add_argument(
         "--module",
@@ -370,11 +385,15 @@ def main():
         args.test_suite in _TEST_SUITES_FUNCTION
     ), f"Unknown test suite {args.test_suite}"
 
+    if args.test_suite == "h100" and (args.fake_pg or args.real_pg_only):
+        parser.error("PG-selection flags do not apply to the h100 test suite")
+
     test_list = _TEST_SUITES_FUNCTION[args.test_suite]()
     if args.test_suite != "h100":
-        test_list = [
-            test for test in test_list if requires_real_pg(test) != args.fake_pg
-        ]
+        if args.fake_pg:
+            test_list = [test for test in test_list if not requires_real_pg(test)]
+        elif args.real_pg_only:
+            test_list = [test for test in test_list if requires_real_pg(test)]
     run_tests(args, test_list, parallel=args.parallel)
 
 
