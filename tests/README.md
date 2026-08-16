@@ -92,9 +92,6 @@ python -m tests.integration_tests.run_tests test_output --test_suite features --
 
 # Run fake-PG model tests on one physical GPU
 python -m tests.integration_tests.run_tests test_output --test_suite models --fake_pg --ngpu 1
-
-# Run only model tests that require real process groups
-python -m tests.integration_tests.run_tests test_output --test_suite models --real_pg_only --ngpu 8
 ```
 
 ### Running Unit Tests
