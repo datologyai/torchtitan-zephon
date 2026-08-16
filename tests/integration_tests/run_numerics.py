@@ -31,10 +31,11 @@ SINGLE_GPU_OPTIONS = (
     "--parallelism.expert_parallel_degree=1"
 )
 
-# DeepSeek's grouped MoE GEMM passes CPU offsets that cannot be copied during
-# CUDA graph capture. Other models retain their configured CUDA graph default.
+# DeepSeek and GPT-OSS grouped MoE GEMMs pass CPU offsets that cannot be copied
+# during CUDA graph capture. Other models retain their configured default.
 SINGLE_GPU_MODEL_OPTIONS = {
     "deepseek_v3": "--training.disable_cuda_graphs",
+    "gpt_oss": "--training.disable_cuda_graphs",
 }
 
 
