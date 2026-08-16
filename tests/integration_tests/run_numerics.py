@@ -90,6 +90,7 @@ def build_8gpu_numerics_test_list(output_dir: Path) -> dict[str, tuple[str, ...]
             f"--test-options={qwen3_moe}",
             f"--job-dump-folder={output_dir / 'qwen3_moe'}",
             f"--import-result={LOSSES / 'qwen3_moe_8gpu_a10g.txt'}",
+            "--metrics=loss,grad_norm",
             "--assert-equal",
             "--steps=100",
         ),
