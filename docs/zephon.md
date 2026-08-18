@@ -9,19 +9,19 @@ For local development with local files only, install Zephon from the sibling
 checkout into the same virtual environment as this repository:
 
 ```bash
-python -m pip install -e /path/to/zephon
+python -m pip install -e /path/to/zephon transformers
 ```
 
 To read Hugging Face Hub datasets through Zephon's ``hf://`` backend, install
 the optional Hugging Face dependencies instead:
 
 ```bash
-python -m pip install -e '/path/to/zephon[hf]'
+python -m pip install -e '/path/to/zephon[hf]' transformers
 ```
 
 No ``datasets`` dependency is needed. Zephon reads the Hub dataset's Parquet
 shards directly. Use ``HF_TOKEN`` (or ``huggingface-cli login``) for gated
-datasets.
+datasets. ``transformers`` is required by Zephon's tokenizer stage.
 
 Run the debug model with the demonstration mixture:
 
