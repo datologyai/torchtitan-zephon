@@ -18,6 +18,7 @@ package, not in this illustrative override.
 from __future__ import annotations
 
 import pickle
+import tomllib
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,6 +66,58 @@ def _parse_sources(sources: Sequence[Mapping[str, Any]]) -> list[ZephonSource]:
                 "Each Zephon source must contain 'name' and 'path' fields"
             ) from exc
     return parsed_sources
+
+
+def _resolve_recipe_path(path: str, recipe_dir: Path) -> str:
+    if "://" in path or Path(path).is_absolute():
+        return path
+    return str((recipe_dir / path).resolve())
+
+
+def _load_data_config(data_config: str) -> dict[str, Any]:
+    recipe_path = Path(data_config)
+    with recipe_path.open("rb") as recipe_file:
+        values = tomllib.load(recipe_file)
+
+    allowed_keys = {
+        "sources",
+        "tokenizer_path",
+        "text_field",
+        "cache_dir",
+        "seed",
+        "chunk_size",
+        "canonical_replicas",
+        "aggregate_dir",
+        "run_id",
+        "fetch_parallelism",
+    }
+    unknown_keys = set(values) - allowed_keys
+    if unknown_keys:
+        raise ValueError(
+            "Unknown Zephon data recipe keys: " + ", ".join(sorted(unknown_keys))
+        )
+    raw_sources = values.get("sources")
+    if not isinstance(raw_sources, list):
+        raise ValueError("Zephon data recipes must contain a 'sources' list")
+
+    recipe_dir = recipe_path.parent
+    sources = _parse_sources(raw_sources)
+    values["sources"] = [
+        ZephonSource(
+            name=source.name,
+            path=_resolve_recipe_path(source.path, recipe_dir),
+            weight=source.weight,
+        )
+        for source in sources
+    ]
+    for key in ("cache_dir", "aggregate_dir"):
+        if key in values and values[key] is not None:
+            values[key] = _resolve_recipe_path(values[key], recipe_dir)
+    if "tokenizer_path" in values:
+        tokenizer_path = values["tokenizer_path"]
+        if tokenizer_path.startswith("."):
+            values["tokenizer_path"] = _resolve_recipe_path(tokenizer_path, recipe_dir)
+    return values
 
 
 def _require_zephon() -> tuple[Any, Any, Any, Any]:
@@ -243,29 +296,35 @@ class ZephonDataLoader(BaseDataLoader):
 def zephon_dataloader(
     config: HuggingFaceTextDataLoader.Config,
     *,
+    data_config: str | None = None,
     sources: list[Mapping[str, Any]] | None = None,
-    tokenizer_path: str = "./tests/assets/tokenizer",
-    text_field: str = "text",
-    cache_dir: str = "./.zephon-cache",
-    seed: int = 42,
-    chunk_size: int = 64,
+    tokenizer_path: str | None = None,
+    text_field: str | None = None,
+    cache_dir: str | None = None,
+    seed: int | None = None,
+    chunk_size: int | None = None,
     canonical_replicas: int | None = None,
     aggregate_dir: str | None = None,
     run_id: str | None = None,
     fetch_parallelism: int | None = None,
 ) -> ZephonDataLoader.Config:
     """Replace the stock text loader with the compact Zephon demonstration."""
-    return derive(
-        config,
-        ZephonDataLoader.Config,
-        sources=_demo_sources() if sources is None else _parse_sources(sources),
-        tokenizer_path=tokenizer_path,
-        text_field=text_field,
-        cache_dir=cache_dir,
-        seed=seed,
-        chunk_size=chunk_size,
-        canonical_replicas=canonical_replicas,
-        aggregate_dir=aggregate_dir,
-        run_id=run_id,
-        fetch_parallelism=fetch_parallelism,
-    )
+    deltas = {} if data_config is None else _load_data_config(data_config)
+    if sources is not None:
+        deltas["sources"] = _parse_sources(sources)
+    elif "sources" not in deltas:
+        deltas["sources"] = _demo_sources()
+    for name, value in {
+        "tokenizer_path": tokenizer_path,
+        "text_field": text_field,
+        "cache_dir": cache_dir,
+        "seed": seed,
+        "chunk_size": chunk_size,
+        "canonical_replicas": canonical_replicas,
+        "aggregate_dir": aggregate_dir,
+        "run_id": run_id,
+        "fetch_parallelism": fetch_parallelism,
+    }.items():
+        if value is not None:
+            deltas[name] = value
+    return derive(config, ZephonDataLoader.Config, **deltas)

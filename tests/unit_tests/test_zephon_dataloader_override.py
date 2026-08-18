@@ -6,6 +6,7 @@
 
 import importlib
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 import torch
@@ -107,12 +108,41 @@ def test_zephon_override_parses_weighted_local_and_hf_sources() -> None:
     )["io_options"] == {"cache": {"enabled": True, "root": "/data/cache"}}
 
 
+def test_zephon_override_loads_local_data_recipe() -> None:
+    from torchtitan.overrides.zephon_dataloader import zephon_dataloader
+
+    repo_root = Path(__file__).resolve().parents[2]
+    config = zephon_dataloader(
+        HuggingFaceTextDataLoader.Config(),
+        data_config=str(repo_root / "examples" / "zephon" / "local_jsonl.toml"),
+        chunk_size=2,
+    )
+
+    assert [(source.name, source.weight) for source in config.sources] == [
+        ("prose", 1.0),
+        ("code", 1.0),
+    ]
+    assert config.sources[0].path == str(
+        repo_root / "tests" / "assets" / "zephon_mixture" / "prose"
+    )
+    assert config.tokenizer_path == str(repo_root / "tests" / "assets" / "tokenizer")
+    assert config.chunk_size == 2
+
+
 def test_zephon_dataloader_yields_torchtitan_batches_and_checkpoints() -> None:
     pytest.importorskip("zephon")
 
-    from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
+    from torchtitan.overrides.zephon_dataloader import (
+        zephon_dataloader,
+        ZephonDataLoader,
+    )
 
-    config = ZephonDataLoader.Config(chunk_size=2)
+    repo_root = Path(__file__).resolve().parents[2]
+    config = zephon_dataloader(
+        HuggingFaceTextDataLoader.Config(),
+        data_config=str(repo_root / "examples" / "zephon" / "local_jsonl.toml"),
+        chunk_size=2,
+    )
 
     def make_loader() -> ZephonDataLoader:
         return ZephonDataLoader(

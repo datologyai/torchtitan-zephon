@@ -27,10 +27,15 @@ Run the debug model with the demonstration mixture:
 
 ```bash
 NGPU=1 ./run_train.sh \
-  --override.imports torchtitan.overrides.zephon_dataloader.zephon_dataloader \
+  --override.imports 'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"examples/zephon/local_jsonl.toml"}' \
   --training.steps 10 \
   --training.seq_len 128
 ```
+
+The data recipe contains the source list and all Zephon-specific data settings.
+Relative local paths are resolved from the recipe file. Start from
+``examples/zephon/local_jsonl.toml`` for local JSONL, or
+``examples/zephon/hf_squad.toml`` for a public Hub source.
 
 The override is deliberately scoped to the training `dataloader` node. It does
 not replace validation, chat, interleaved, or multimodal loaders.
@@ -68,9 +73,13 @@ Parquet data. Its default is ``./.zephon-cache``; set it to a suitably sized
 local disk path for real runs. It is separate from the shared ``aggregate_dir``
 used for elastic checkpoint aggregation.
 
-Override kwargs configure non-demo sources:
+To use a custom recipe, pass its path rather than embedding the source list in
+the command line:
 
 ```bash
 ./run_train.sh \
-  --override.imports 'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"sources":[{"name":"web","path":"hf://HuggingFaceFW/fineweb-edu/train","weight":3.0},{"name":"code","path":"/data/code"}],"text_field":"text","cache_dir":"/local/zephon-cache","canonical_replicas":4,"aggregate_dir":"/shared/zephon","run_id":"example"}'
+  --override.imports 'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"/path/to/my_mixture.toml"}'
 ```
+
+Explicit override kwargs still take precedence over the recipe when a one-off
+experiment needs to adjust a setting.

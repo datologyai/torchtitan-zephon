@@ -1,0 +1,15 @@
+# A minimal, reproducible two-source Zephon mixture.
+# Relative paths are resolved from this recipe file.
+
+tokenizer_path = "../../tests/assets/tokenizer"
+text_field = "text"
+seed = 42
+chunk_size = 64
+
+[[sources]]
+name = "prose"
+path = "../../tests/assets/zephon_mixture/prose"
+
+[[sources]]
+name = "code"
+path = "../../tests/assets/zephon_mixture/code"

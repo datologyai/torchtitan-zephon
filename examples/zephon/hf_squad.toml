@@ -1,0 +1,12 @@
+# A public Hugging Face dataset through Zephon's hf:// backend.
+# For a real run, point tokenizer_path at the tokenizer matching the model.
+
+tokenizer_path = "../../tests/assets/tokenizer"
+text_field = "context"
+cache_dir = "./.zephon-cache"
+seed = 42
+chunk_size = 64
+
+[[sources]]
+name = "squad"
+path = "hf://rajpurkar/squad/plain_text/train"
