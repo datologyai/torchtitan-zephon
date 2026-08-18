@@ -167,6 +167,9 @@ class PrecompiledFxTraceArtifact:
     # HOPs (AOTCompiledArtifact) baked into serialized_gm. The spec
     # is only used for optional runtime validation in run_traced().
     config_fingerprint: ConfigFingerprint = ConfigFingerprint("")
+    # This reduced spec retains standard container and dict-key ordering while
+    # treating custom pytree nodes such as BlockMask as leaves.
+    user_inputs_order_spec: pytree.TreeSpec | None = None
 
     @classmethod
     def from_traced_result(
@@ -206,6 +209,7 @@ class PrecompiledFxTraceArtifact:
             output_spec=traced_result.output_spec,
             tensor_input_indices=traced_result.tensor_input_indices,
             config_fingerprint=config_fingerprint or ConfigFingerprint(""),
+            user_inputs_order_spec=traced_result.user_inputs_order_spec,
         )
 
     def to_traced_result(self) -> TracedResult:
@@ -228,21 +232,18 @@ class PrecompiledFxTraceArtifact:
         gm = GraphPickler.loads(self.serialized_gm, fake_mode)
         gm.recompile()
 
-        # Provide a minimal dummy spec since user_inputs_spec is not
-        # serialized (see comment on the dataclass field above).
-        dummy_spec = pytree.tree_flatten(((), {}))[1]
-
         return TracedResult(
             gm=gm,
             example_inputs=(),
             num_flat_inputs=self.num_flat_inputs,
             input_subclass_layouts=self.input_subclass_layouts,
-            user_inputs_spec=dummy_spec,
+            user_inputs_spec=None,
             tensor_input_indices=self.tensor_input_indices,
             num_flat_outputs=self.num_flat_outputs,
             output_subclass_layouts=self.output_subclass_layouts,
             output_spec=self.output_spec,
             state_fqns=self.state_fqns,
+            user_inputs_order_spec=getattr(self, "user_inputs_order_spec", None),
         )
 
 
@@ -292,6 +293,11 @@ def precompile_fx_trace_load(
     artifact: PrecompiledFxTraceArtifact = pickle.loads(data)
 
     _validate_config_fingerprint(artifact.config_fingerprint, expected_fingerprint)
+    if getattr(artifact, "user_inputs_order_spec", None) is None:
+        raise ValueError(
+            "Precompiled artifact has no input ordering metadata. Delete the stale "
+            "artifact and re-run precompile to generate a fresh one."
+        )
 
     logger.info(
         f"FxTrace precompile artifact loaded: "
