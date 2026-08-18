@@ -56,7 +56,7 @@ def build_fake_pg_numerics_test_list() -> dict[str, tuple[str, str, int, str]]:
     # larger DistMuon layouts currently fail alignment or Fake-PG all-to-all.
     kimi_debug_fsdp_ep = (
         "--parallelism.data_parallel_shard_degree 8 "
-        "--parallelism.expert_parallel_degree 2"
+        "--parallelism.expert_parallel_degree 8"
     )
     llama3_8b_fsdp_tp = (
         "--parallelism.data_parallel_shard_degree 8 "
@@ -72,7 +72,7 @@ def build_fake_pg_numerics_test_list() -> dict[str, tuple[str, str, int, str]]:
     # warmup into ten test steps reaches the full LR and spikes the grad norm.
     qwen_30b_fsdp_ep = (
         "--parallelism.data_parallel_shard_degree 64 "
-        "--parallelism.expert_parallel_degree 2 "
+        "--parallelism.expert_parallel_degree 64 "
         "--parallelism.spmd_backend spmd_types "
         "--lr-scheduler.total-steps 3000 "
         "--training.local_batch_size 1 "
