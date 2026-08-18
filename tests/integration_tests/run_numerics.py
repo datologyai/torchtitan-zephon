@@ -4,14 +4,15 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Run single-GPU and distributed model numerics integration tests.
+"""Run fake-process-group and real-distributed numerics integration tests.
 
-Both suites drive ``scripts/loss_compare.py``, which owns running training,
-reading metrics out of TensorBoard, and comparing them against the checked-in
+Both suites drive ``scripts/loss_compare.py``, which runs training, reads
+full-precision metrics from TensorBoard, and compares them against checked-in
 goldens under ``tests/assets/losses``.
 """
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -20,45 +21,108 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOSSES = REPO_ROOT / "tests/assets/losses"
 
-# Unsharded runs pin every parallelism axis to 1 so the golden depends only on
-# the model.
-SINGLE_GPU_OPTIONS = (
-    "--parallelism.data_parallel_replicate_degree=1 "
-    "--parallelism.data_parallel_shard_degree=1 "
-    "--parallelism.tensor_parallel_degree=1 "
-    "--parallelism.context_parallel_degree=1 "
-    "--parallelism.pipeline_parallel_degree=1 "
-    "--parallelism.expert_parallel_degree=1"
-)
 
-# DeepSeek and GPT-OSS grouped MoE GEMMs pass CPU offsets that cannot be copied
-# during CUDA graph capture. Other models retain their configured default.
-SINGLE_GPU_MODEL_OPTIONS = {
-    "deepseek_v3": "--training.disable_cuda_graphs",
-    "gpt_oss": "--training.disable_cuda_graphs",
-}
+def build_fake_pg_numerics_test_list() -> dict[str, tuple[str, str, int, str]]:
+    """Return Fake-PG golden configurations that fit A10G."""
+    text_fixture = (
+        "--training.local_batch_size 1 "
+        "--training.seq_len 512 "
+        "--hf_assets_path ./tests/assets/tokenizer "
+        "--dataloader.dataset c4_test"
+    )
 
-
-def build_1gpu_numerics_test_list() -> dict[str, str]:
-    """Guard unsharded model numerics with exact 10-step loss and grad norm."""
-    # Kimi and Muse use their text-only paths first. Their vision numerics are
-    # separate follow-up coverage; Kimi's bicubic CUDA backward is currently
-    # incompatible with deterministic mode. Flux is deferred because its
-    # unsharded FP32 T5-XXL encoder does not fit on a 24 GB A10G.
-    # Qwen3.5 is deferred until FLA chunked autotuning is bitwise stable across
-    # fresh A10G runners.
+    # CP is intentionally absent: FakeProcessGroup's local collective
+    # approximations produced non-finite or pathological gradient norms for
+    # every FSDP+TP+CP numerics probe.
+    # TODO: add CP when Fake PG can produce stable CP numerics; current probes
+    # produce non-finite or pathological gradient norms.
+    deepseek_16b_fsdp_tp_ep = (
+        "--parallelism.data_parallel_shard_degree 8 "
+        "--parallelism.tensor_parallel_degree 2 "
+        "--parallelism.expert_parallel_degree 2 "
+        "--training.disable_cuda_graphs "
+        f"{text_fixture}"
+    )
+    gpt_oss_20b_fsdp_tp_ep = (
+        "--parallelism.data_parallel_shard_degree 16 "
+        "--parallelism.tensor_parallel_degree 2 "
+        "--parallelism.expert_parallel_degree 2 "
+        "--parallelism.spmd_backend spmd_types "
+        "--training.disable_cuda_graphs "
+        f"{text_fixture}"
+    )
+    # TODO: replace the Kimi debug golden with Moonlight 16B-A3B once it fits the
+    # A10G tier. Its stable world-size-8 FSDP+EP layout peaks at 29.44 GiB;
+    # larger DistMuon layouts currently fail alignment or Fake-PG all-to-all.
+    kimi_debug_fsdp_ep = (
+        "--parallelism.data_parallel_shard_degree 8 "
+        "--parallelism.expert_parallel_degree 2"
+    )
+    llama3_8b_fsdp_tp = (
+        "--parallelism.data_parallel_shard_degree 8 "
+        "--parallelism.tensor_parallel_degree 2 "
+        f"{text_fixture}"
+    )
+    muse_glimmer_30b_fsdp_tp = (
+        "--parallelism.data_parallel_shard_degree 32 "
+        "--parallelism.tensor_parallel_degree 2 "
+        f"{text_fixture}"
+    )
+    # Preserve the production scheduler horizon. Compressing its 600-step
+    # warmup into ten test steps reaches the full LR and spikes the grad norm.
+    qwen_30b_fsdp_ep = (
+        "--parallelism.data_parallel_shard_degree 64 "
+        "--parallelism.expert_parallel_degree 2 "
+        "--parallelism.spmd_backend spmd_types "
+        "--lr-scheduler.total-steps 3000 "
+        "--training.local_batch_size 1 "
+        "--training.seq_len 128 "
+        "--hf_assets_path ./tests/assets/tokenizer "
+        "--dataloader.dataset c4_test "
+        "--training.disable_cuda_graphs"
+    )
     return {
-        "deepseek_v3": "deepseek_v3_debugmodel",
-        "gpt_oss": "gpt_oss_debugmodel_flex",
-        "kimi_k2_7": "kimi_k2_5_debugmodel_text",
-        "llama3": "llama3_debugmodel",
-        "muse_glimmer": "muse_glimmer_debugmodel",
-        "qwen3": "qwen3_debugmodel",
+        "deepseek_v3_16b_fsdp_tp_ep_fake_pg": (
+            "deepseek_v3",
+            "deepseek_v3_16b",
+            16,
+            deepseek_16b_fsdp_tp_ep,
+        ),
+        "gpt_oss_20b_fsdp_tp_ep_fake_pg": (
+            "gpt_oss",
+            "gpt_oss_20b",
+            32,
+            gpt_oss_20b_fsdp_tp_ep,
+        ),
+        "kimi_k2_5_debugmodel_fsdp_ep_fake_pg": (
+            "kimi_k2_7",
+            "kimi_k2_5_debugmodel_text",
+            8,
+            kimi_debug_fsdp_ep,
+        ),
+        "llama3_8b_fsdp_tp_fake_pg": (
+            "llama3",
+            "llama3_8b",
+            16,
+            llama3_8b_fsdp_tp,
+        ),
+        "muse_glimmer_30b_fsdp_tp_fake_pg": (
+            "muse_glimmer",
+            "muse_glimmer_30b",
+            64,
+            muse_glimmer_30b_fsdp_tp,
+        ),
+        "qwen3_30b_a3b_fsdp_ep_fake_pg": (
+            "qwen3",
+            "qwen3_30b_a3b",
+            64,
+            qwen_30b_fsdp_ep,
+        ),
     }
 
 
 def build_8gpu_numerics_test_list(output_dir: Path) -> dict[str, tuple[str, ...]]:
-    """Guard selected distributed numerics and sharding parity with real collectives."""
+    """Guard distributed numerics and sharding parity with real collectives."""
     llama_fsdp = "--parallelism.data_parallel_replicate_degree=1"
     # The standard EP dispatcher synchronizes with the CPU, so EP=4 cannot use
     # CUDA graph capture even though the config's default EP=1 path can.
@@ -97,8 +161,18 @@ def build_8gpu_numerics_test_list(output_dir: Path) -> dict[str, tuple[str, ...]
     }
 
 
-def _run_loss_compare(test_name: str, options: tuple[str, ...], ngpus: int) -> None:
+def _run_loss_compare(
+    test_name: str,
+    options: tuple[str, ...],
+    ngpus: int,
+    *,
+    comm_mode: str = "",
+) -> None:
     print(f"[NUMERICS] Running {test_name}", flush=True)
+    env = os.environ.copy()
+    env.pop("COMM_MODE", None)
+    if comm_mode:
+        env["COMM_MODE"] = comm_mode
     subprocess.run(
         [
             sys.executable,
@@ -110,37 +184,32 @@ def _run_loss_compare(test_name: str, options: tuple[str, ...], ngpus: int) -> N
             f"--test-ngpus={ngpus}",
         ],
         cwd=REPO_ROOT,
+        env=env,
         check=True,
     )
 
 
 def run_1gpu_numerics(output_dir: Path) -> None:
-    for model_name, config in build_1gpu_numerics_test_list().items():
-        options = " ".join(
-            (
-                SINGLE_GPU_OPTIONS,
-                SINGLE_GPU_MODEL_OPTIONS.get(model_name, ""),
-            )
-        ).strip()
+    for test_name, test_spec in build_fake_pg_numerics_test_list().items():
+        module, config, logical_world_size, options = test_spec
         _run_loss_compare(
-            model_name,
+            test_name,
             (
-                f"--baseline-module={model_name}",
+                f"--baseline-module={module}",
                 f"--baseline-config={config}",
                 f"--baseline-options={options}",
-                # Mirror the test settings so loss_compare stays in
-                # baseline-only mode and runs the model exactly once.
-                f"--test-module={model_name}",
+                f"--test-module={module}",
                 f"--test-config={config}",
                 f"--test-options={options}",
-                f"--job-dump-folder={output_dir / model_name}",
-                f"--import-result={LOSSES / f'{model_name}_1gpu_a10g.txt'}",
+                f"--job-dump-folder={output_dir / test_name}",
+                f"--import-result={LOSSES / f'{test_name}_a10g.txt'}",
                 "--metrics=loss,grad_norm",
                 "--no-seed-checkpoint",
                 "--assert-equal",
                 "--steps=10",
             ),
-            ngpus=1,
+            ngpus=logical_world_size,
+            comm_mode="fake_backend",
         )
 
 

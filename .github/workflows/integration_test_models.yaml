@@ -72,9 +72,9 @@ jobs:
 
         mkdir -p "$RUNNER_TEMP/artifacts-to-be-uploaded"
 
-        # Stage 1: exact numerics on a real world-size-1 process group. Guard
-        # every feasible model's unsharded 10-step loss and grad norm against
-        # the A10G golden.
+        # Stage 1: one physical GPU runs primarily production-size models with
+        # fake logical worlds and checks loss and grad norm. A documented debug
+        # fallback covers models whose smallest production size exceeds A10G.
         python -m tests.integration_tests.run_numerics \
           --test_suite 1gpu \
           "$RUNNER_TEMP/artifacts-to-be-uploaded/model_numerics"

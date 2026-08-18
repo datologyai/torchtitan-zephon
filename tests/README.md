@@ -28,9 +28,12 @@ This directory contains tests for the torchtitan project, including unit tests a
   - 8 GPU Real PG tests cover features that require communication between real
     ranks.
 - Model tests: width across supported models.
-  - 1 GPU runs combine Fake PG composability coverage with real world-size-1
-    numerics guards, comparing 10 steps of full-precision loss and gradient norm
-    against checked-in A10G goldens.
+  - 1 GPU runs combine broad Fake PG composability coverage with primarily
+    production-size fake-logical-world numerics guards that fit A10G. A debug
+    model is used only when the smallest production model exceeds A10G memory.
+    The numerics tier compares 10 steps of full-precision loss and gradient norm
+    against checked-in goldens. CP is excluded because current Fake PG CP probes
+    produce non-finite or pathological gradient norms.
   - 8 GPU runs retain the existing distributed loss comparisons and give each
     model a primary real distributed run whose loss can be inspected for
     convergence.
