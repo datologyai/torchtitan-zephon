@@ -4,7 +4,9 @@
 tokenizer_path = "../../tests/assets/tokenizer"
 text_field = "text"
 seed = 42
-chunk_size = 64
+# The checked-in sources contain four samples each. Real datasets can use a
+# much larger chunk size.
+chunk_size = 2
 
 [[sources]]
 name = "prose"

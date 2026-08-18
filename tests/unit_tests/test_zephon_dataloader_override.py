@@ -115,7 +115,6 @@ def test_zephon_override_loads_local_data_recipe() -> None:
     config = zephon_dataloader(
         HuggingFaceTextDataLoader.Config(),
         data_config=str(repo_root / "examples" / "zephon" / "local_jsonl.toml"),
-        chunk_size=2,
     )
 
     assert [(source.name, source.weight) for source in config.sources] == [
@@ -141,7 +140,6 @@ def test_zephon_dataloader_yields_torchtitan_batches_and_checkpoints() -> None:
     config = zephon_dataloader(
         HuggingFaceTextDataLoader.Config(),
         data_config=str(repo_root / "examples" / "zephon" / "local_jsonl.toml"),
-        chunk_size=2,
     )
 
     def make_loader() -> ZephonDataLoader:
