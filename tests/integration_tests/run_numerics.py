@@ -122,38 +122,61 @@ def build_fake_pg_numerics_test_list() -> dict[str, tuple[str, str, int, str]]:
 
 
 def build_8gpu_numerics_test_list(output_dir: Path) -> dict[str, tuple[str, ...]]:
-    """Guard distributed numerics and sharding parity with real collectives."""
-    llama_fsdp = "--parallelism.data_parallel_replicate_degree=1"
-    # The standard EP dispatcher synchronizes with the CPU, so EP=4 cannot use
-    # CUDA graph capture even though the config's default EP=1 path can.
-    qwen3_moe = (
+    """Guard distributed numerics for parallelisms that need real collectives."""
+    gpt_oss_pp_fsdp_cp_ep = (
+        "--parallelism.spmd_backend spmd_types "
+        "--parallelism.data_parallel_shard_degree 2 "
+        "--parallelism.context_parallel_degree 2 "
+        "--parallelism.context_parallel_load_balancer ptrr "
+        "--parallelism.context_parallel_ptrr_mask_key basic_mask "
+        "--parallelism.pipeline_parallel_degree 2 "
+        "--parallelism.pipeline_parallel_schedule Interleaved1F1B "
+        "--parallelism.expert_parallel_degree 4 "
+        "--training.disable_cuda_graphs "
+        "activation-checkpoint:selective"
+    )
+    llama3_fsdp_tp_cp = (
+        "--parallelism.spmd_backend spmd_types "
+        "--parallelism.data_parallel_shard_degree 2 "
         "--parallelism.tensor_parallel_degree 2 "
+        "--parallelism.context_parallel_degree 2"
+    )
+    qwen3_moe_fsdp_tp_cp_ep = (
+        "--parallelism.spmd_backend spmd_types "
+        "--parallelism.data_parallel_shard_degree 2 "
+        "--parallelism.tensor_parallel_degree 2 "
+        "--parallelism.context_parallel_degree 2 "
         "--parallelism.expert_parallel_degree 4 "
         "--training.disable_cuda_graphs"
     )
     return {
-        "llama3_fsdp_hsdp": (
-            f"--baseline-options={llama_fsdp}",
-            "--test-options=--parallelism.data_parallel_replicate_degree=4",
-            f"--job-dump-folder={output_dir / 'llama3_fsdp_hsdp'}",
-            "--assert-equal",
-            "--steps=1",
-        ),
-        "llama3_fsdp": (
-            f"--baseline-options={llama_fsdp}",
-            f"--job-dump-folder={output_dir / 'llama3_fsdp'}",
-            f"--import-result={LOSSES / 'llama3_8gpu_a10g.txt'}",
+        "gpt_oss_pp_fsdp_cp_ep": (
+            "--baseline-module=gpt_oss",
+            "--baseline-config=gpt_oss_debugmodel_flex",
+            f"--baseline-options={gpt_oss_pp_fsdp_cp_ep}",
+            f"--test-options={gpt_oss_pp_fsdp_cp_ep}",
+            f"--job-dump-folder={output_dir / 'gpt_oss_pp_fsdp_cp_ep'}",
+            f"--import-result={LOSSES / 'gpt_oss_pp_fsdp_cp_ep_8gpu_a10g.txt'}",
             "--metrics=loss,grad_norm",
             "--assert-equal",
             "--steps=100",
         ),
-        "qwen3_moe": (
+        "llama3_fsdp_tp_cp": (
+            f"--baseline-options={llama3_fsdp_tp_cp}",
+            f"--test-options={llama3_fsdp_tp_cp}",
+            f"--job-dump-folder={output_dir / 'llama3_fsdp_tp_cp'}",
+            f"--import-result={LOSSES / 'llama3_fsdp_tp_cp_8gpu_a10g.txt'}",
+            "--metrics=loss,grad_norm",
+            "--assert-equal",
+            "--steps=100",
+        ),
+        "qwen3_moe_fsdp_tp_cp_ep": (
             "--baseline-module=qwen3",
             "--baseline-config=qwen3_moe_debug",
-            f"--baseline-options={qwen3_moe}",
-            f"--test-options={qwen3_moe}",
-            f"--job-dump-folder={output_dir / 'qwen3_moe'}",
-            f"--import-result={LOSSES / 'qwen3_moe_8gpu_a10g.txt'}",
+            f"--baseline-options={qwen3_moe_fsdp_tp_cp_ep}",
+            f"--test-options={qwen3_moe_fsdp_tp_cp_ep}",
+            f"--job-dump-folder={output_dir / 'qwen3_moe_fsdp_tp_cp_ep'}",
+            f"--import-result={LOSSES / 'qwen3_moe_fsdp_tp_cp_ep_8gpu_a10g.txt'}",
             "--metrics=loss,grad_norm",
             "--assert-equal",
             "--steps=100",
