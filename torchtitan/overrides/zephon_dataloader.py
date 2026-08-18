@@ -18,7 +18,7 @@ package, not in this illustrative override.
 from __future__ import annotations
 
 import pickle
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -32,12 +32,39 @@ from torchtitan.config import derive, override
 from torchtitan.hf_datasets.text_datasets import HuggingFaceTextDataLoader
 
 
-def _demo_sources() -> dict[str, str]:
+@dataclass(frozen=True, slots=True)
+class ZephonSource:
+    """One named Zephon dataset and its relative sampling weight."""
+
+    name: str
+    path: str
+    weight: float = 1.0
+
+
+def _demo_sources() -> list[ZephonSource]:
     root = Path(__file__).resolve().parents[2] / "tests" / "assets" / "zephon_mixture"
-    return {
-        "prose": str(root / "prose"),
-        "code": str(root / "code"),
-    }
+    return [
+        ZephonSource(name="prose", path=str(root / "prose")),
+        ZephonSource(name="code", path=str(root / "code")),
+    ]
+
+
+def _parse_sources(sources: Sequence[Mapping[str, Any]]) -> list[ZephonSource]:
+    parsed_sources = []
+    for source in sources:
+        try:
+            parsed_sources.append(
+                ZephonSource(
+                    name=source["name"],
+                    path=source["path"],
+                    weight=source.get("weight", 1.0),
+                )
+            )
+        except KeyError as exc:
+            raise ValueError(
+                "Each Zephon source must contain 'name' and 'path' fields"
+            ) from exc
+    return parsed_sources
 
 
 def _require_zephon() -> tuple[Any, Any, Any, Any]:
@@ -59,16 +86,17 @@ class ZephonDataLoader(BaseDataLoader):
 
     @dataclass(kw_only=True, slots=True)
     class Config(BaseDataLoader.Config):
-        sources: dict[str, str] = field(default_factory=_demo_sources)
-        """Mapping from mixture-component name to a JSONL dataset directory."""
-
-        mixture: dict[str, float] = field(
-            default_factory=lambda: {"prose": 0.7, "code": 0.3}
-        )
-        """Target sample share for each source."""
+        sources: list[ZephonSource] = field(default_factory=_demo_sources)
+        """Named local paths or ``hf://`` URIs with optional mixture weights."""
 
         tokenizer_path: str = "./tests/assets/tokenizer"
         """Local Hugging Face tokenizer path used by Zephon's tokenize stage."""
+
+        text_field: str = "text"
+        """Name of the text column shared by all configured sources."""
+
+        cache_dir: str = "./.zephon-cache"
+        """Writable local cache for remote shards and decoded Parquet data."""
 
         seed: int = 42
         chunk_size: int = 64
@@ -91,12 +119,14 @@ class ZephonDataLoader(BaseDataLoader):
         self._validate_config(config, dp_world_size)
 
         datasets = [
-            Dataset.from_path(name=name, path=path)
-            for name, path in config.sources.items()
+            Dataset.from_path(name=source.name, path=source.path)
+            for source in config.sources
         ]
         work_source = StaticMixtureWorkSource(
             datasets=datasets,
-            mixture=MixtureSpec(config.mixture),
+            mixture=MixtureSpec(
+                {source.name: source.weight for source in config.sources}
+            ),
             chunk_size=config.chunk_size,
             seed=config.seed,
             exhausted_policy="repeat",
@@ -110,7 +140,7 @@ class ZephonDataLoader(BaseDataLoader):
         self._pipeline = (
             pipeline.tokenize(
                 tokenizer_id=config.tokenizer_path,
-                field="text",
+                field=config.text_field,
                 max_length=seq_len + 1,
                 split_long_samples=True,
                 special_tokens="bos_eos",
@@ -128,15 +158,17 @@ class ZephonDataLoader(BaseDataLoader):
 
     @staticmethod
     def _validate_config(config: Config, dp_world_size: int) -> None:
-        source_names = set(config.sources)
-        if not source_names:
+        if not config.sources:
             raise ValueError("dataloader.sources must not be empty")
-        if set(config.mixture) != source_names:
-            raise ValueError(
-                "dataloader.mixture keys must exactly match dataloader.sources keys"
-            )
-        if any(weight <= 0 for weight in config.mixture.values()):
-            raise ValueError("dataloader.mixture weights must all be positive")
+        source_names = [source.name for source in config.sources]
+        if len(set(source_names)) != len(source_names):
+            raise ValueError("dataloader.sources names must be unique")
+        if any(not source.path for source in config.sources):
+            raise ValueError("dataloader.sources paths must not be empty")
+        if any(source.weight <= 0 for source in config.sources):
+            raise ValueError("dataloader.sources weights must all be positive")
+        if not config.cache_dir:
+            raise ValueError("dataloader.cache_dir must not be empty")
         canonical_replicas = config.canonical_replicas or dp_world_size
         if canonical_replicas < dp_world_size:
             raise ValueError(
@@ -159,6 +191,13 @@ class ZephonDataLoader(BaseDataLoader):
             "dp_group_id": dp_rank,
             "canonical_replicas": config.canonical_replicas or dp_world_size,
         }
+        if any(source.path.startswith("hf://") for source in config.sources):
+            options["io_options"] = {
+                "cache": {
+                    "enabled": True,
+                    "root": config.cache_dir,
+                }
+            }
         if dist.is_initialized():
             options["world_size"] = dist.get_world_size()
             options["global_rank"] = dist.get_rank()
@@ -204,9 +243,10 @@ class ZephonDataLoader(BaseDataLoader):
 def zephon_dataloader(
     config: HuggingFaceTextDataLoader.Config,
     *,
-    sources: dict[str, str] | None = None,
-    mixture: dict[str, float] | None = None,
+    sources: list[Mapping[str, Any]] | None = None,
     tokenizer_path: str = "./tests/assets/tokenizer",
+    text_field: str = "text",
+    cache_dir: str = "./.zephon-cache",
     seed: int = 42,
     chunk_size: int = 64,
     canonical_replicas: int | None = None,
@@ -218,9 +258,10 @@ def zephon_dataloader(
     return derive(
         config,
         ZephonDataLoader.Config,
-        sources=_demo_sources() if sources is None else sources,
-        mixture={"prose": 0.7, "code": 0.3} if mixture is None else mixture,
+        sources=_demo_sources() if sources is None else _parse_sources(sources),
         tokenizer_path=tokenizer_path,
+        text_field=text_field,
+        cache_dir=cache_dir,
         seed=seed,
         chunk_size=chunk_size,
         canonical_replicas=canonical_replicas,

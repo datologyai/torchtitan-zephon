@@ -14,7 +14,7 @@ from pathlib import Path
 
 import torch.distributed as dist
 
-from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
+from torchtitan.overrides.zephon_dataloader import ZephonDataLoader, ZephonSource
 
 
 def _batch_state(input_dict, labels):
@@ -66,11 +66,10 @@ def main() -> None:
     )
     aggregate_dir = args.output_dir / "aggregate"
     config = ZephonDataLoader.Config(
-        sources={
-            "prose": str(source_root / "prose"),
-            "code": str(source_root / "code"),
-        },
-        mixture={"prose": 0.7, "code": 0.3},
+        sources=[
+            ZephonSource(name="prose", path=str(source_root / "prose")),
+            ZephonSource(name="code", path=str(source_root / "code")),
+        ],
         tokenizer_path=str(
             Path(__file__).resolve().parents[2] / "tests" / "assets" / "tokenizer"
         ),

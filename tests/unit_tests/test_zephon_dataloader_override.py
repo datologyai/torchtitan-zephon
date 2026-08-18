@@ -50,20 +50,61 @@ def test_zephon_override_replaces_only_training_dataloader() -> None:
     from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
 
     assert isinstance(config.dataloader, ZephonDataLoader.Config)
-    assert config.dataloader.mixture == {"prose": 0.7, "code": 0.3}
+    assert [source.weight for source in config.dataloader.sources] == [1.0, 1.0]
     assert not isinstance(config.validator_dataloader, ZephonDataLoader.Config)
 
 
-def test_zephon_dataloader_requires_matching_mixture_components() -> None:
-    from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
+def test_zephon_dataloader_validates_sources() -> None:
+    from torchtitan.overrides.zephon_dataloader import ZephonDataLoader, ZephonSource
 
     config = ZephonDataLoader.Config(
-        sources={"prose": "tests/assets/zephon_mixture/prose"},
-        mixture={"code": 1.0},
+        sources=[
+            ZephonSource(name="prose", path="/data/prose"),
+            ZephonSource(name="prose", path="/data/code"),
+        ],
     )
 
-    with pytest.raises(ValueError, match="must exactly match"):
+    with pytest.raises(ValueError, match="names must be unique"):
         ZephonDataLoader._validate_config(config, dp_world_size=1)
+
+
+def test_zephon_override_parses_weighted_local_and_hf_sources() -> None:
+    from torchtitan.overrides.zephon_dataloader import (
+        zephon_dataloader,
+        ZephonDataLoader,
+        ZephonSource,
+    )
+
+    config = zephon_dataloader(
+        HuggingFaceTextDataLoader.Config(),
+        sources=[
+            {"name": "web", "path": "hf://org/dataset/train", "weight": 3.0},
+            {"name": "code", "path": "/data/code"},
+        ],
+        text_field="content",
+    )
+
+    assert [(source.name, source.path, source.weight) for source in config.sources] == [
+        ("web", "hf://org/dataset/train", 3.0),
+        ("code", "/data/code", 1.0),
+    ]
+    assert config.text_field == "content"
+
+    assert "io_options" not in ZephonDataLoader._runtime_options(
+        ZephonDataLoader.Config(
+            sources=[ZephonSource(name="local", path="/data/local")]
+        ),
+        dp_world_size=1,
+        dp_rank=0,
+    )
+    assert ZephonDataLoader._runtime_options(
+        ZephonDataLoader.Config(
+            sources=[ZephonSource(name="remote", path="hf://org/dataset/train")],
+            cache_dir="/data/cache",
+        ),
+        dp_world_size=1,
+        dp_rank=0,
+    )["io_options"] == {"cache": {"enabled": True, "root": "/data/cache"}}
 
 
 def test_zephon_dataloader_yields_torchtitan_batches_and_checkpoints() -> None:
