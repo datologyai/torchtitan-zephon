@@ -1,18 +1,17 @@
-# A minimal, reproducible two-source Zephon mixture.
+# A local mixture whose requested distribution is 75% prose and 25% code.
 # Relative paths are resolved from this recipe file.
 
 tokenizer_path = "../../tests/assets/tokenizer"
 text_field = "text"
 seed = 42
-# The checked-in sources contain four samples each. Eight samples per work
-# chunk keeps the small smoke test from producing a warning for nearly every
-# batch; real datasets can use a much larger value.
 chunk_size = 8
 
 [[sources]]
 name = "prose"
 path = "../../tests/assets/zephon_mixture/prose"
+weight = 3.0
 
 [[sources]]
 name = "code"
 path = "../../tests/assets/zephon_mixture/code"
+weight = 1.0

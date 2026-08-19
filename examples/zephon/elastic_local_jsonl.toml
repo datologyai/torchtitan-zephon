@@ -1,0 +1,17 @@
+# A two-canonical-lane version of the local mixture.
+# Supply aggregate_dir and run_id at launch time because they identify a
+# particular shared run, not this reusable data recipe.
+
+tokenizer_path = "../../tests/assets/tokenizer"
+text_field = "text"
+seed = 42
+chunk_size = 8
+canonical_replicas = 2
+
+[[sources]]
+name = "prose"
+path = "../../tests/assets/zephon_mixture/prose"
+
+[[sources]]
+name = "code"
+path = "../../tests/assets/zephon_mixture/code"

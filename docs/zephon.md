@@ -6,17 +6,17 @@ tokenizes and packs them online, and stores Zephon's full checkpoint state with
 the TorchTitan checkpoint.
 
 For local development with local files only, install Zephon from the sibling
-checkout into the same virtual environment as this repository:
+checkout into this repository's uv environment:
 
 ```bash
-python -m pip install -e /path/to/zephon transformers
+uv pip install --python .venv/bin/python -e /path/to/zephon transformers
 ```
 
 To read Hugging Face Hub datasets through Zephon's ``hf://`` backend, install
 the optional Hugging Face dependencies instead:
 
 ```bash
-python -m pip install -e '/path/to/zephon[hf]' transformers
+uv pip install --python .venv/bin/python -e '/path/to/zephon[hf]' transformers
 ```
 
 No ``datasets`` dependency is needed. Zephon reads the Hub dataset's Parquet
@@ -26,16 +26,27 @@ datasets. ``transformers`` is required by Zephon's tokenizer stage.
 Run the debug model with the demonstration mixture:
 
 ```bash
-NGPU=1 ./run_train.sh \
+NGPU=1 MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh \
   --override.imports 'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"examples/zephon/local_jsonl.toml"}' \
   --training.steps 10 \
-  --training.seq_len 128
+  --training.seq_len 128 \
+  --training.local_batch_size 2
 ```
+
+If you manually install a PyTorch nightly, activate `.venv` and run
+`./run_train.sh` directly, or use `uv run --no-sync`; a normal `uv run` may
+replace the nightly during dependency synchronization.
 
 The data recipe contains the source list and all Zephon-specific data settings.
 Relative local paths are resolved from the recipe file. Start from
 ``examples/zephon/local_jsonl.toml`` for local JSONL, or
 ``examples/zephon/hf_squad.toml`` for a public Hub source.
+
+The checked-in local recipes are deliberately small, but their larger
+``chunk_size`` reduces end-of-work packing warnings. A warning about dropping
+a trailing partial pack is expected when the finite fixture does not fill the
+final ``seq_len + 1`` token bin. It represents only the unfinished tail of a
+work chunk, not a loss of complete training batches.
 
 The override is deliberately scoped to the training `dataloader` node. It does
 not replace validation, chat, interleaved, or multimodal loaders.
@@ -67,6 +78,37 @@ hf://org/dataset@revision/config/train
 
 All sources in a mixture use the same text column. Set ``text_field`` when a
 dataset uses a different name, such as SQuAD's ``context`` column.
+
+## Mixtures
+
+``local_jsonl.toml`` leaves both weights unspecified, so its two sources are
+each sampled at 50%. ``weighted_local_jsonl.toml`` makes the same relationship
+explicit: `prose = 3.0` and `code = 1.0`, which Zephon normalizes to a 75/25
+requested mixture. The observed ratio converges to that target over a real
+run; a short smoke run is intentionally too small to be a useful statistical
+measurement.
+
+## Elastic launch recipe
+
+``elastic_local_jsonl.toml`` fixes the data stream at two canonical lanes. On
+a single multi-GPU host, provide a stable shared aggregate directory and run
+identifier at launch time:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 NGPU=2 MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh \
+  --override.imports 'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"examples/zephon/elastic_local_jsonl.toml","aggregate_dir":"/mnt/zephon-aggregate","run_id":"local-elastic-demo"}' \
+  --training.steps 4 \
+  --training.seq_len 128 \
+  --training.global_batch_size 4 \
+  --training.local_batch_size 2 \
+  --checkpoint.enable \
+  --checkpoint.interval 2 \
+  --dump_folder ./outputs/zephon-elastic
+```
+
+The aggregate directory must be writable by every rank and persist across a
+resume. Keep the recipe, `canonical_replicas`, aggregate directory, run ID,
+and global batch size unchanged when changing GPU count.
 
 ``cache_dir`` is a writable, per-node cache for remote shards and decoded
 Parquet data. Its default is ``./.zephon-cache``; set it to a suitably sized

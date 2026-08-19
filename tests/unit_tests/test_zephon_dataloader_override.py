@@ -125,7 +125,28 @@ def test_zephon_override_loads_local_data_recipe() -> None:
         repo_root / "tests" / "assets" / "zephon_mixture" / "prose"
     )
     assert config.tokenizer_path == str(repo_root / "tests" / "assets" / "tokenizer")
-    assert config.chunk_size == 2
+    assert config.chunk_size == 8
+
+
+def test_zephon_override_loads_weighted_and_elastic_recipes() -> None:
+    from torchtitan.overrides.zephon_dataloader import zephon_dataloader
+
+    repo_root = Path(__file__).resolve().parents[2]
+    weighted_config = zephon_dataloader(
+        HuggingFaceTextDataLoader.Config(),
+        data_config=str(
+            repo_root / "examples" / "zephon" / "weighted_local_jsonl.toml"
+        ),
+    )
+    elastic_config = zephon_dataloader(
+        HuggingFaceTextDataLoader.Config(),
+        data_config=str(
+            repo_root / "examples" / "zephon" / "elastic_local_jsonl.toml"
+        ),
+    )
+
+    assert [source.weight for source in weighted_config.sources] == [3.0, 1.0]
+    assert elastic_config.canonical_replicas == 2
 
 
 def test_zephon_dataloader_yields_torchtitan_batches_and_checkpoints() -> None:
