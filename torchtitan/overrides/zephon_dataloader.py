@@ -35,10 +35,11 @@ from torchtitan.hf_datasets.text_datasets import HuggingFaceTextDataLoader
 
 @dataclass(frozen=True, slots=True)
 class ZephonSource:
-    """One named Zephon dataset and its relative sampling weight."""
+    """One named Zephon dataset, optional format, and relative sampling weight."""
 
     name: str
     path: str
+    fmt: str | None = None
     weight: float = 1.0
 
 
@@ -58,6 +59,7 @@ def _parse_sources(sources: Sequence[Mapping[str, Any]]) -> list[ZephonSource]:
                 ZephonSource(
                     name=source["name"],
                     path=source["path"],
+                    fmt=source.get("fmt"),
                     weight=source.get("weight", 1.0),
                 )
             )
@@ -106,6 +108,7 @@ def _load_data_config(data_config: str) -> dict[str, Any]:
         ZephonSource(
             name=source.name,
             path=_resolve_recipe_path(source.path, recipe_dir),
+            fmt=source.fmt,
             weight=source.weight,
         )
         for source in sources
@@ -148,8 +151,8 @@ class ZephonDataLoader(BaseDataLoader):
         text_field: str = "text"
         """Name of the text column shared by all configured sources."""
 
-        cache_dir: str = "./.zephon-cache"
-        """Writable local cache for remote shards and decoded Parquet data."""
+        cache_dir: str | None = None
+        """Optional writable cache for all file-backed sources."""
 
         seed: int = 42
         chunk_size: int = 64
@@ -172,7 +175,7 @@ class ZephonDataLoader(BaseDataLoader):
         self._validate_config(config, dp_world_size)
 
         datasets = [
-            Dataset.from_path(name=source.name, path=source.path)
+            Dataset.from_path(name=source.name, path=source.path, fmt=source.fmt)
             for source in config.sources
         ]
         work_source = StaticMixtureWorkSource(
@@ -220,8 +223,8 @@ class ZephonDataLoader(BaseDataLoader):
             raise ValueError("dataloader.sources paths must not be empty")
         if any(source.weight <= 0 for source in config.sources):
             raise ValueError("dataloader.sources weights must all be positive")
-        if not config.cache_dir:
-            raise ValueError("dataloader.cache_dir must not be empty")
+        if config.cache_dir is not None and not config.cache_dir:
+            raise ValueError("dataloader.cache_dir must not be empty when set")
         canonical_replicas = config.canonical_replicas or dp_world_size
         if canonical_replicas < dp_world_size:
             raise ValueError(
@@ -244,7 +247,7 @@ class ZephonDataLoader(BaseDataLoader):
             "dp_group_id": dp_rank,
             "canonical_replicas": config.canonical_replicas or dp_world_size,
         }
-        if any(source.path.startswith("hf://") for source in config.sources):
+        if config.cache_dir is not None:
             options["io_options"] = {
                 "cache": {
                     "enabled": True,
