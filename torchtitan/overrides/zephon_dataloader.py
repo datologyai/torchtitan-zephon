@@ -8,7 +8,7 @@
 
 """Example Zephon dataloader override for TorchTitan.
 
-The override replaces only the training ``HuggingFaceTextDataLoader`` with a
+The override replaces only the training ``GrainDataLoader`` with a
 Zephon pipeline. It deliberately keeps the integration small: two local JSONL
 sources, a deterministic mixture, online tokenization and packing, and Zephon
 checkpoint state. Production-specific features belong in an integration
@@ -27,10 +27,11 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from torchtitan.components.dataloader import BaseDataLoader
+from torchtitan.components.data.collators import TrainerBatch
+from torchtitan.components.data.loader import BaseDataLoader, GrainDataLoader
 from torchtitan.components.loss import IGNORE_INDEX
+from torchtitan.components.tokenizer import BaseTokenizer
 from torchtitan.config import derive, override
-from torchtitan.hf_datasets.text_datasets import HuggingFaceTextDataLoader
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +84,6 @@ def _load_data_config(data_config: str) -> dict[str, Any]:
 
     allowed_keys = {
         "sources",
-        "tokenizer_path",
         "text_field",
         "cache_dir",
         "seed",
@@ -116,10 +116,6 @@ def _load_data_config(data_config: str) -> dict[str, Any]:
     for key in ("cache_dir", "aggregate_dir"):
         if key in values and values[key] is not None:
             values[key] = _resolve_recipe_path(values[key], recipe_dir)
-    if "tokenizer_path" in values:
-        tokenizer_path = values["tokenizer_path"]
-        if tokenizer_path.startswith("."):
-            values["tokenizer_path"] = _resolve_recipe_path(tokenizer_path, recipe_dir)
     return values
 
 
@@ -145,9 +141,6 @@ class ZephonDataLoader(BaseDataLoader):
         sources: list[ZephonSource] = field(default_factory=_demo_sources)
         """Named local paths or ``hf://`` URIs with optional mixture weights."""
 
-        tokenizer_path: str = "./tests/assets/tokenizer"
-        """Local Hugging Face tokenizer path used by Zephon's tokenize stage."""
-
         text_field: str = "text"
         """Name of the text column shared by all configured sources."""
 
@@ -167,12 +160,18 @@ class ZephonDataLoader(BaseDataLoader):
         *,
         dp_world_size: int,
         dp_rank: int,
-        seq_len: int,
-        local_batch_size: int,
+        tokenizer: BaseTokenizer,
+        max_context_length: int,
+        num_tokens_per_batch: int,
         **_: Any,
     ) -> None:
         Pipeline, Dataset, MixtureSpec, StaticMixtureWorkSource = _require_zephon()
         self._validate_config(config, dp_world_size)
+        tokenizer_path = getattr(tokenizer, "tokenizer_path", None)
+        if not isinstance(tokenizer_path, str) or not tokenizer_path:
+            raise ValueError(
+                "ZephonDataLoader requires a tokenizer with a tokenizer_path"
+            )
 
         datasets = [
             Dataset.from_path(name=source.name, path=source.path, fmt=source.fmt)
@@ -195,18 +194,18 @@ class ZephonDataLoader(BaseDataLoader):
             pipeline = pipeline.fetch_parallelism(config.fetch_parallelism)
         self._pipeline = (
             pipeline.tokenize(
-                tokenizer_id=config.tokenizer_path,
+                tokenizer_id=tokenizer_path,
                 field=config.text_field,
-                max_length=seq_len + 1,
+                max_length=max_context_length + 1,
                 split_long_samples=True,
                 special_tokens="bos_eos",
             )
             .pack_flat(
-                max_length=seq_len + 1,
+                max_length=num_tokens_per_batch + 1,
                 algorithm="wrap",
                 emit_positions=True,
             )
-            .batch(local_batch_size, drop_last=True)
+            .batch(1, drop_last=True)
             .options(**self._runtime_options(config, dp_world_size, dp_rank))
         )
         self._pipeline.preflight_tokenizers()
@@ -263,7 +262,7 @@ class ZephonDataLoader(BaseDataLoader):
             options["run_id"] = config.run_id
         return options
 
-    def __iter__(self) -> Iterator[tuple[dict[str, torch.Tensor], torch.Tensor]]:
+    def __iter__(self) -> Iterator[TrainerBatch]:
         for sample_batch in self._pipeline:
             training_batch = sample_batch.to_training(
                 tokens_field=self._tokens_field,
@@ -272,10 +271,14 @@ class ZephonDataLoader(BaseDataLoader):
                 ignore_index=IGNORE_INDEX,
                 rename_fields={"input_ids": "input"},
             )
-            input_dict = {"input": training_batch["input"]}
+            labels = training_batch["labels"].squeeze(0)
+            input_dict = {
+                "input": training_batch["input"].squeeze(0),
+                "num_valid_tokens": int((labels != IGNORE_INDEX).sum()),
+            }
             if "positions" in training_batch:
-                input_dict["positions"] = training_batch["positions"]
-            yield input_dict, training_batch["labels"]
+                input_dict["positions"] = training_batch["positions"].squeeze(0)
+            yield input_dict, labels
 
     def state_dict(self) -> dict[str, bytes]:
         """Store the complete Zephon checkpoint as one DCP-safe opaque value."""
@@ -291,17 +294,16 @@ class ZephonDataLoader(BaseDataLoader):
 
 
 @override(
-    target=HuggingFaceTextDataLoader.Config,
+    target=GrainDataLoader.Config,
     fqns=["dataloader"],
     exact=True,
     description="Zephon deterministic mixed-data dataloader",
 )
 def zephon_dataloader(
-    config: HuggingFaceTextDataLoader.Config,
+    config: GrainDataLoader.Config,
     *,
     data_config: str | None = None,
     sources: list[Mapping[str, Any]] | None = None,
-    tokenizer_path: str | None = None,
     text_field: str | None = None,
     cache_dir: str | None = None,
     seed: int | None = None,
@@ -318,7 +320,6 @@ def zephon_dataloader(
     elif "sources" not in deltas:
         deltas["sources"] = _demo_sources()
     for name, value in {
-        "tokenizer_path": tokenizer_path,
         "text_field": text_field,
         "cache_dir": cache_dir,
         "seed": seed,

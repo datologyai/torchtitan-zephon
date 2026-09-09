@@ -1,7 +1,6 @@
 # A local mixture whose requested distribution is 75% prose and 25% code.
 # Relative paths are resolved from this recipe file.
 
-tokenizer_path = "../../tests/assets/tokenizer"
 text_field = "text"
 seed = 42
 chunk_size = 4

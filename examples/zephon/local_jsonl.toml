@@ -1,7 +1,6 @@
 # A minimal, reproducible two-source Zephon mixture.
 # Relative paths are resolved from this recipe file.
 
-tokenizer_path = "../../tests/assets/tokenizer"
 text_field = "text"
 seed = 42
 # The checked-in sources contain four samples each. Eight samples per work

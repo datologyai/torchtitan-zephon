@@ -14,6 +14,7 @@ from pathlib import Path
 
 import torch.distributed as dist
 
+from torchtitan.components.tokenizer import HuggingFaceTokenizer
 from torchtitan.overrides.zephon_dataloader import ZephonDataLoader, ZephonSource
 
 
@@ -70,9 +71,6 @@ def main() -> None:
             ZephonSource(name="prose", path=str(source_root / "prose")),
             ZephonSource(name="code", path=str(source_root / "code")),
         ],
-        tokenizer_path=str(
-            Path(__file__).resolve().parents[2] / "tests" / "assets" / "tokenizer"
-        ),
         chunk_size=2,
         canonical_replicas=args.canonical_replicas,
         aggregate_dir=str(aggregate_dir),
@@ -82,8 +80,14 @@ def main() -> None:
         config,
         dp_world_size=world_size,
         dp_rank=rank,
-        seq_len=16,
-        local_batch_size=2,
+        tokenizer=HuggingFaceTokenizer(
+            HuggingFaceTokenizer.Config(),
+            tokenizer_path=str(
+                Path(__file__).resolve().parents[2] / "tests" / "assets" / "tokenizer"
+            ),
+        ),
+        max_context_length=16,
+        num_tokens_per_batch=32,
     )
 
     if args.mode == "resume":

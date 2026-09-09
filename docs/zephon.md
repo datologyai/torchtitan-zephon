@@ -26,8 +26,8 @@ uv pip install --python .venv/bin/python \
 NGPU=1 MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh \
   --override.imports 'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"examples/zephon/local_jsonl.toml"}' \
   --training.steps 10 \
-  --training.seq_len 128 \
-  --training.local_batch_size 2
+  --training.max_context_length 128 \
+  --training.num_tokens_per_microbatch_per_dp_rank 256
 ```
 
 The checked-in data is deliberately tiny and exists only to make the command
@@ -39,7 +39,6 @@ Keep Zephon settings and source definitions in a TOML recipe. A source has a
 stable name, path, optional `fmt`, and optional relative weight:
 
 ```toml
-tokenizer_path = "meta-llama/Llama-3.2-1B"
 text_field = "text"
 cache_dir = "/local-ssd/zephon"
 
@@ -54,6 +53,10 @@ name = "code"
 path = "s3://example-bucket/code"
 weight = 1.0
 ```
+
+Zephon uses the tokenizer built by the selected TorchTitan configuration, so
+the recipe deliberately does not contain a tokenizer path. Configure the
+tokenizer with the usual TorchTitan model configuration.
 
 `fmt` maps directly to `Dataset.from_path(..., fmt=...)`; omit it to use
 Zephon's format detection. Zephon normalizes relative weights, so the example

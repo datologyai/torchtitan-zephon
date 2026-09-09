@@ -11,24 +11,28 @@ from pathlib import Path
 import pytest
 import torch
 
-from torchtitan.components.dataloader import BaseDataLoader
+from torchtitan.components.data.loader import BaseDataLoader, GrainDataLoader
+from torchtitan.components.loss import IGNORE_INDEX
+from torchtitan.components.tokenizer import HuggingFaceTokenizer
 from torchtitan.config import (
-    apply_overrides,
-    clear_overrides,
     Configurable,
     OverrideConfig,
+    apply_overrides,
+    clear_overrides,
 )
-from torchtitan.hf_datasets.text_datasets import HuggingFaceTextDataLoader
+from torchtitan.hf_datasets.text_datasets import DATASETS
+
+
+def _grain_config() -> GrainDataLoader.Config:
+    return GrainDataLoader.Config(dataset=DATASETS["c4_test"])
 
 
 class OverrideRoot(Configurable):
     @dataclass(kw_only=True, slots=True)
     class Config(Configurable.Config):
-        dataloader: BaseDataLoader.Config = field(
-            default_factory=HuggingFaceTextDataLoader.Config
-        )
+        dataloader: BaseDataLoader.Config = field(default_factory=_grain_config)
         validator_dataloader: BaseDataLoader.Config = field(
-            default_factory=HuggingFaceTextDataLoader.Config
+            default_factory=_grain_config
         )
 
 
@@ -76,13 +80,13 @@ def test_zephon_dataloader_validates_sources() -> None:
 
 def test_zephon_override_parses_weighted_local_and_hf_sources() -> None:
     from torchtitan.overrides.zephon_dataloader import (
-        zephon_dataloader,
         ZephonDataLoader,
         ZephonSource,
+        zephon_dataloader,
     )
 
     config = zephon_dataloader(
-        HuggingFaceTextDataLoader.Config(),
+        _grain_config(),
         sources=[
             {
                 "name": "web",
@@ -126,7 +130,7 @@ def test_zephon_override_loads_local_data_recipe() -> None:
 
     repo_root = Path(__file__).resolve().parents[2]
     config = zephon_dataloader(
-        HuggingFaceTextDataLoader.Config(),
+        _grain_config(),
         data_config=str(repo_root / "examples" / "zephon" / "local_jsonl.toml"),
     )
 
@@ -137,7 +141,6 @@ def test_zephon_override_loads_local_data_recipe() -> None:
     assert config.sources[0].path == str(
         repo_root / "tests" / "assets" / "zephon_mixture" / "prose"
     )
-    assert config.tokenizer_path == str(repo_root / "tests" / "assets" / "tokenizer")
     assert config.chunk_size == 8
 
 
@@ -146,16 +149,14 @@ def test_zephon_override_loads_weighted_and_elastic_recipes() -> None:
 
     repo_root = Path(__file__).resolve().parents[2]
     weighted_config = zephon_dataloader(
-        HuggingFaceTextDataLoader.Config(),
+        _grain_config(),
         data_config=str(
             repo_root / "examples" / "zephon" / "weighted_local_jsonl.toml"
         ),
     )
     elastic_config = zephon_dataloader(
-        HuggingFaceTextDataLoader.Config(),
-        data_config=str(
-            repo_root / "examples" / "zephon" / "elastic_local_jsonl.toml"
-        ),
+        _grain_config(),
+        data_config=str(repo_root / "examples" / "zephon" / "elastic_local_jsonl.toml"),
     )
 
     assert [source.fmt for source in weighted_config.sources] == ["jsonl", "jsonl"]
@@ -167,13 +168,13 @@ def test_zephon_dataloader_yields_torchtitan_batches_and_checkpoints() -> None:
     pytest.importorskip("zephon")
 
     from torchtitan.overrides.zephon_dataloader import (
-        zephon_dataloader,
         ZephonDataLoader,
+        zephon_dataloader,
     )
 
     repo_root = Path(__file__).resolve().parents[2]
     config = zephon_dataloader(
-        HuggingFaceTextDataLoader.Config(),
+        _grain_config(),
         data_config=str(
             repo_root / "examples" / "zephon" / "weighted_local_jsonl.toml"
         ),
@@ -184,8 +185,12 @@ def test_zephon_dataloader_yields_torchtitan_batches_and_checkpoints() -> None:
             config,
             dp_world_size=1,
             dp_rank=0,
-            seq_len=16,
-            local_batch_size=2,
+            tokenizer=HuggingFaceTokenizer(
+                HuggingFaceTokenizer.Config(),
+                tokenizer_path=str(repo_root / "tests" / "assets" / "tokenizer"),
+            ),
+            max_context_length=16,
+            num_tokens_per_batch=32,
         )
 
     baseline_iter = iter(make_loader())
@@ -195,11 +200,12 @@ def test_zephon_dataloader_yields_torchtitan_batches_and_checkpoints() -> None:
     loader_iter = iter(loader)
     inputs, labels = next(loader_iter)
 
-    assert inputs["input"].shape == (2, 16)
-    assert labels.shape == (2, 16)
+    assert inputs["input"].shape == (32,)
+    assert labels.shape == (32,)
     assert inputs["input"].dtype == torch.long
     assert labels.dtype == torch.long
     assert "positions" in inputs
+    assert inputs["num_valid_tokens"] == int((labels != IGNORE_INDEX).sum())
 
     checkpoint = loader.state_dict()
     assert isinstance(checkpoint["zephon"], bytes)
