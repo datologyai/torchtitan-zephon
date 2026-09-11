@@ -1,0 +1,3 @@
+# Temporary Git-tag installation until Zephon has a suitable public PyPI release.
+zephon[hf] @ git+https://github.com/datologyai/zephon.git@v0.0.1b23
+transformers>=4.44.0

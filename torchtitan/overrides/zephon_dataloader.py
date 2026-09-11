@@ -128,9 +128,8 @@ def _require_zephon() -> tuple[Any, Any, Any, Any]:
         from zephon.work import MixtureSpec, StaticMixtureWorkSource
     except ImportError as exc:
         raise ImportError(
-            "The Zephon dataloader override requires Zephon. For local development, "
-            "install the sibling checkout with `python -m pip install -e "
-            "/path/to/zephon`."
+            "The Zephon dataloader override requires Zephon. Install the pinned "
+            "distribution from requirements-zephon.txt."
         ) from exc
     return Pipeline, Dataset, MixtureSpec, StaticMixtureWorkSource
 

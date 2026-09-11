@@ -16,13 +16,13 @@ The mechanism is an ordinary TorchTitan override; see the
 
 ## Quickstart
 
-Install the pinned Zephon release into the environment used to run TorchTitan,
-then launch the small local JSONL example:
+Until Zephon has a suitable public PyPI release, this repository pins a
+temporary HTTPS Git-tag installation in `requirements-zephon.txt`. Install it
+into the environment used to run TorchTitan, then launch the small local JSONL
+example:
 
 ```bash
-uv pip install --python .venv/bin/python \
-  "zephon @ git+ssh://git@github.com/datologyai/zephon.git@v0.0.1b21" \
-  transformers
+uv pip install --python .venv/bin/python -r requirements-zephon.txt
 
 NGPU=1 MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh \
   --override.imports \
@@ -74,15 +74,9 @@ requests a 75/25 web/code mixture. `cache_dir` is explicit: when supplied, it
 enables a per-node cache for every file-backed source, including cloud URIs and
 network-mounted paths.
 
-For a Hugging Face Hub source, install Zephon's optional HF dependencies and
-use an `hf://` URI. The included [`hf_squad.toml`](../examples/zephon/hf_squad.toml)
-shows the full form:
-
-```bash
-uv pip install --python .venv/bin/python \
-  "zephon[hf] @ git+ssh://git@github.com/datologyai/zephon.git@v0.0.1b21" \
-  transformers
-```
+For a Hugging Face Hub source, use an `hf://` URI. The pinned requirement
+includes Zephon's `hf` extra. The included
+[`hf_squad.toml`](../examples/zephon/hf_squad.toml) shows the full form.
 
 Zephon reads Hugging Face Parquet shards directly; the `datasets` package is
 not required.
@@ -104,3 +98,7 @@ two-GPU command.
 
 For contribution and test guidance, see [CONTRIBUTING.md](../CONTRIBUTING.md)
 and [tests/README.md](../tests/README.md).
+
+To validate an installed release in a fresh environment, run
+`scripts/validate_zephon_install.sh`. Set `ZEPHON_WHEEL=/path/to/zephon.whl` to
+test a locally built wheel instead of the temporary Git tag.
