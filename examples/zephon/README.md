@@ -37,6 +37,19 @@ global token batches by fingerprint. It exits unsuccessfully if any token or
 other trainer-batch field differs. Pass `--work-dir PATH` to keep each run's
 checkpoint and JSON stream records for inspection.
 
+## Training checkpoint smoke test
+
+On a Linux machine with one CUDA GPU, run a bounded TorchTitan training and
+resume through the real checkpoint coordinator:
+
+```bash
+examples/zephon/run_training_smoke.sh ./outputs/zephon-training-smoke
+```
+
+The first launch trains through step 2 and saves full checkpoints. The second
+launch restores the latest completed checkpoint and trains step 3 with a fresh
+Zephon loader. Use a new output path for each invocation.
+
 ## Elastic launch
 
 The elastic recipe fixes the data stream at two canonical lanes. On one host
