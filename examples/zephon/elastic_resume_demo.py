@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import pickle
+import socket
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,12 @@ DEFAULT_RECIPE = REPO_ROOT / "examples" / "zephon" / "elastic_local_jsonl.toml"
 DEFAULT_TOKENIZER = REPO_ROOT / "tests" / "assets" / "tokenizer"
 INITIAL_NUM_WORKERS = 2
 RESUME_NUM_WORKERS = 1
+
+
+def _find_free_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as local_socket:
+        local_socket.bind(("127.0.0.1", 0))
+        return local_socket.getsockname()[1]
 
 
 def _batch_state(input_dict: dict[str, Any], labels: Any) -> dict[str, Any]:
@@ -141,11 +148,13 @@ def _run_phase(
     num_tokens_per_batch: int,
 ) -> None:
     torchrun = Path(sys.executable).with_name("torchrun")
+    master_port = _find_free_local_port()
     command = [
         str(torchrun),
-        "--standalone",
         "--nnodes=1",
         f"--nproc-per-node={num_workers}",
+        "--master-addr=127.0.0.1",
+        f"--master-port={master_port}",
         str(Path(__file__).resolve()),
         "--worker",
         "--phase",
