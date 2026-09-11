@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 import torch
+import torch.distributed.checkpoint as dcp
 
 from torchtitan.components.data.loader import BaseDataLoader, GrainDataLoader
 from torchtitan.components.loss import IGNORE_INDEX
@@ -336,3 +337,58 @@ def test_zephon_validation_dataloader_is_unshuffled_and_finite() -> None:
 
     assert batches
     assert len(batches) < 10
+
+
+def test_zephon_override_state_round_trips_through_dcp(tmp_path: Path) -> None:
+    pytest.importorskip("zephon")
+
+    repo_root = Path(__file__).resolve().parents[2]
+    data_config = repo_root / "examples" / "zephon" / "weighted_local_jsonl.toml"
+    root_config = OverrideRoot.Config()
+    override_config = OverrideConfig(
+        imports=[
+            (
+                "torchtitan.overrides.zephon_dataloader.zephon_dataloader",
+                {"data_config": str(data_config)},
+            )
+        ]
+    )
+    importlib.import_module("torchtitan.overrides.zephon_dataloader")
+    apply_overrides(override_config, root_config)
+
+    tokenizer = HuggingFaceTokenizer(
+        HuggingFaceTokenizer.Config(),
+        tokenizer_path=str(repo_root / "tests" / "assets" / "tokenizer"),
+    )
+
+    def build_loader() -> BaseDataLoader:
+        return root_config.dataloader.build(
+            dp_world_size=1,
+            dp_rank=0,
+            tokenizer=tokenizer,
+            max_context_length=16,
+            num_tokens_per_batch=32,
+        )
+
+    reference_iterator = iter(build_loader())
+    next(reference_iterator)
+    expected = next(reference_iterator)
+
+    loader = build_loader()
+    loader_iterator = iter(loader)
+    next(loader_iterator)
+    checkpoint_dir = tmp_path / "checkpoint"
+    with pytest.warns(UserWarning, match="assuming the intent is to save"):
+        dcp.save({"dataloader": loader}, checkpoint_id=checkpoint_dir)
+
+    restored_loader = build_loader()
+    with pytest.warns(UserWarning, match="assuming the intent is to load"):
+        dcp.load({"dataloader": restored_loader}, checkpoint_id=checkpoint_dir)
+    actual = next(iter(restored_loader))
+
+    assert actual.keys() == expected.keys()
+    for key in actual:
+        if isinstance(actual[key], torch.Tensor):
+            assert torch.equal(actual[key], expected[key])
+        else:
+            assert actual[key] == expected[key]
