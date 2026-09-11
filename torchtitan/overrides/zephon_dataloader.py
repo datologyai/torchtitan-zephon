@@ -21,6 +21,7 @@ import pickle
 import tomllib
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from math import isfinite
 from pathlib import Path
 from typing import Any, Literal
 
@@ -241,15 +242,38 @@ class ZephonDataLoader(BaseDataLoader):
         if not config.sources:
             raise ValueError("dataloader.sources must not be empty")
         source_names = [source.name for source in config.sources]
+        if any(not name for name in source_names):
+            raise ValueError("dataloader.sources names must not be empty")
         if len(set(source_names)) != len(source_names):
             raise ValueError("dataloader.sources names must be unique")
         if any(not source.path for source in config.sources):
             raise ValueError("dataloader.sources paths must not be empty")
-        if any(source.weight <= 0 for source in config.sources):
+        if any(
+            not isinstance(source.weight, (int, float))
+            or not isfinite(source.weight)
+            or source.weight <= 0
+            for source in config.sources
+        ):
             raise ValueError("dataloader.sources weights must all be positive")
+        if config.input_mode == "online" and not config.text_field:
+            raise ValueError("dataloader.text_field must not be empty in online mode")
         if config.cache_dir is not None and not config.cache_dir:
             raise ValueError("dataloader.cache_dir must not be empty when set")
-        canonical_replicas = config.canonical_replicas or dp_world_size
+        if config.chunk_size <= 0:
+            raise ValueError("dataloader.chunk_size must be positive")
+        if config.fetch_parallelism is not None and config.fetch_parallelism <= 0:
+            raise ValueError("dataloader.fetch_parallelism must be positive when set")
+        if config.canonical_replicas is not None and config.canonical_replicas <= 0:
+            raise ValueError("dataloader.canonical_replicas must be positive when set")
+        if config.aggregate_dir is not None and not config.aggregate_dir:
+            raise ValueError("dataloader.aggregate_dir must not be empty when set")
+        if config.run_id is not None and not config.run_id:
+            raise ValueError("dataloader.run_id must not be empty when set")
+        canonical_replicas = (
+            config.canonical_replicas
+            if config.canonical_replicas is not None
+            else dp_world_size
+        )
         if canonical_replicas < dp_world_size:
             raise ValueError(
                 "dataloader.canonical_replicas must be at least the current "
@@ -269,7 +293,11 @@ class ZephonDataLoader(BaseDataLoader):
             "deterministic": True,
             "dp_degree": dp_world_size,
             "dp_group_id": dp_rank,
-            "canonical_replicas": config.canonical_replicas or dp_world_size,
+            "canonical_replicas": (
+                config.canonical_replicas
+                if config.canonical_replicas is not None
+                else dp_world_size
+            ),
         }
         if config.cache_dir is not None:
             options["io_options"] = {

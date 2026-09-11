@@ -148,7 +148,34 @@ def test_zephon_dataloader_validates_distributed_configuration() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("config_values", "message"),
+    [
+        ({"input_mode": "unsupported"}, "input_mode"),
+        ({"text_field": ""}, "text_field"),
+        ({"chunk_size": 0}, "chunk_size"),
+        ({"fetch_parallelism": 0}, "fetch_parallelism"),
+        ({"canonical_replicas": 0}, "canonical_replicas"),
+        ({"aggregate_dir": ""}, "aggregate_dir"),
+        ({"run_id": ""}, "run_id"),
+    ],
+)
+def test_zephon_dataloader_rejects_invalid_pipeline_settings(
+    config_values: dict[str, object], message: str
+) -> None:
+    from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
+
+    with pytest.raises(ValueError, match=message):
+        ZephonDataLoader._validate_config(
+            ZephonDataLoader.Config(**config_values), dp_world_size=1
+        )
+
+
 def test_zephon_override_parses_weighted_local_and_hf_sources() -> None:
+    pytest.importorskip("zephon")
+
+    from zephon import MixtureSpec
+
     from torchtitan.overrides.zephon_dataloader import (
         zephon_dataloader,
         ZephonDataLoader,
@@ -177,6 +204,9 @@ def test_zephon_override_parses_weighted_local_and_hf_sources() -> None:
         ("code", "/data/code", None, 1.0),
     ]
     assert config.text_field == "content"
+    assert MixtureSpec(
+        {source.name: source.weight for source in config.sources}
+    ).normalized == {"web": 0.75, "code": 0.25}
 
     assert "io_options" not in ZephonDataLoader._runtime_options(
         ZephonDataLoader.Config(
@@ -232,6 +262,66 @@ def test_zephon_override_loads_weighted_and_elastic_recipes() -> None:
     assert [source.fmt for source in weighted_config.sources] == ["jsonl", "jsonl"]
     assert [source.weight for source in weighted_config.sources] == [3.0, 1.0]
     assert elastic_config.canonical_replicas == 2
+
+
+def test_zephon_recipe_resolves_paths_and_preserves_pipeline_settings(
+    tmp_path: Path,
+) -> None:
+    from torchtitan.overrides.zephon_dataloader import zephon_dataloader
+
+    recipe = tmp_path / "recipe.toml"
+    recipe.write_text(
+        """
+text_field = "content"
+cache_dir = "cache"
+seed = 7
+chunk_size = 12
+canonical_replicas = 4
+aggregate_dir = "aggregate"
+run_id = "stable-run"
+fetch_parallelism = 3
+
+[[sources]]
+name = "local"
+path = "records"
+fmt = "jsonl"
+weight = 2.0
+
+[[sources]]
+name = "remote"
+path = "s3://bucket/records"
+""".strip()
+    )
+
+    config = zephon_dataloader(_grain_config(), data_config=str(recipe))
+
+    assert config.sources[0].path == str(tmp_path / "records")
+    assert config.sources[0].fmt == "jsonl"
+    assert config.sources[1].path == "s3://bucket/records"
+    assert config.sources[1].fmt is None
+    assert config.cache_dir == str(tmp_path / "cache")
+    assert config.aggregate_dir == str(tmp_path / "aggregate")
+    assert config.text_field == "content"
+    assert config.seed == 7
+    assert config.chunk_size == 12
+    assert config.canonical_replicas == 4
+    assert config.run_id == "stable-run"
+    assert config.fetch_parallelism == 3
+
+
+def test_zephon_recipe_rejects_unknown_settings(tmp_path: Path) -> None:
+    from torchtitan.overrides.zephon_dataloader import zephon_dataloader
+
+    recipe = tmp_path / "unknown.toml"
+    recipe.write_text(
+        """
+unsupported_option = true
+sources = []
+""".strip()
+    )
+
+    with pytest.raises(ValueError, match="unsupported_option"):
+        zephon_dataloader(_grain_config(), data_config=str(recipe))
 
 
 def test_zephon_pretokenized_recipe_skips_tokenization_and_resumes() -> None:
