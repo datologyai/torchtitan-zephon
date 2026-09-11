@@ -8,6 +8,7 @@ import importlib
 import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -231,6 +232,94 @@ def test_zephon_override_loads_weighted_and_elastic_recipes() -> None:
     assert [source.fmt for source in weighted_config.sources] == ["jsonl", "jsonl"]
     assert [source.weight for source in weighted_config.sources] == [3.0, 1.0]
     assert elastic_config.canonical_replicas == 2
+
+
+def test_zephon_pretokenized_recipe_skips_tokenization_and_resumes() -> None:
+    pytest.importorskip("zephon")
+
+    from torchtitan.overrides.zephon_dataloader import (
+        ZephonDataLoader,
+        zephon_dataloader,
+    )
+
+    repo_root = Path(__file__).resolve().parents[2]
+    config = zephon_dataloader(
+        _grain_config(),
+        data_config=str(
+            repo_root / "examples" / "zephon" / "pretokenized_local_jsonl.toml"
+        ),
+    )
+
+    def build_loader() -> ZephonDataLoader:
+        return ZephonDataLoader(
+            config,
+            dp_world_size=1,
+            dp_rank=0,
+            tokenizer=SimpleNamespace(),
+            max_context_length=16,
+            num_tokens_per_batch=32,
+        )
+
+    reference_iterator = iter(build_loader())
+    first_reference = next(reference_iterator)
+    second_reference = next(reference_iterator)
+
+    loader = build_loader()
+    loader_iterator = iter(loader)
+    first_inputs, first_labels = next(loader_iterator)
+    assert torch.equal(first_labels, first_inputs["input"] + 1)
+    assert first_inputs["positions"].tolist() == list(range(16)) * 2
+    assert first_inputs["num_valid_tokens"] == 32
+
+    restored_loader = build_loader()
+    restored_loader.load_state_dict(loader.state_dict())
+    resumed = next(iter(restored_loader))
+
+    for (actual_inputs, actual_labels), (expected_inputs, expected_labels) in (
+        ((first_inputs, first_labels), first_reference),
+        (resumed, second_reference),
+    ):
+        assert actual_inputs.keys() == expected_inputs.keys()
+        for key in actual_inputs:
+            if isinstance(actual_inputs[key], torch.Tensor):
+                assert torch.equal(actual_inputs[key], expected_inputs[key])
+            else:
+                assert actual_inputs[key] == expected_inputs[key]
+        assert torch.equal(actual_labels, expected_labels)
+
+
+@pytest.mark.parametrize(
+    ("record", "message"),
+    [
+        ('{"text":"not tokenized"}\n', "require 'input_ids'"),
+        ('{"input_ids":[1,2]}\n', "num_tokens_per_batch \\+ 1 = 33"),
+    ],
+)
+def test_zephon_pretokenized_records_require_complete_token_batches(
+    tmp_path: Path, record: str, message: str
+) -> None:
+    pytest.importorskip("zephon")
+
+    from torchtitan.overrides.zephon_dataloader import ZephonDataLoader, ZephonSource
+
+    source_dir = tmp_path / "missing_tokens"
+    source_dir.mkdir()
+    (source_dir / "data.jsonl").write_text(record)
+    loader = ZephonDataLoader(
+        ZephonDataLoader.Config(
+            sources=[ZephonSource(name="invalid", path=str(source_dir))],
+            input_mode="pretokenized",
+            chunk_size=1,
+        ),
+        dp_world_size=1,
+        dp_rank=0,
+        tokenizer=SimpleNamespace(),
+        max_context_length=16,
+        num_tokens_per_batch=32,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        next(iter(loader))
 
 
 def test_zephon_dataloader_yields_torchtitan_batches_and_checkpoints() -> None:

@@ -22,7 +22,7 @@ import tomllib
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import torch
 import torch.distributed as dist
@@ -84,6 +84,7 @@ def _load_data_config(data_config: str) -> dict[str, Any]:
 
     allowed_keys = {
         "sources",
+        "input_mode",
         "text_field",
         "cache_dir",
         "seed",
@@ -141,6 +142,9 @@ class ZephonDataLoader(BaseDataLoader):
         sources: list[ZephonSource] = field(default_factory=_demo_sources)
         """Named local paths or ``hf://`` URIs with optional mixture weights."""
 
+        input_mode: Literal["online", "pretokenized"] = "online"
+        """Whether records contain text or one already-packed token sequence."""
+
         text_field: str = "text"
         """Name of the text column shared by all configured sources."""
 
@@ -180,11 +184,6 @@ class ZephonDataLoader(BaseDataLoader):
     ) -> None:
         Pipeline, Dataset, MixtureSpec, StaticMixtureWorkSource = _require_zephon()
         self._validate_config(config, dp_world_size)
-        tokenizer_path = getattr(tokenizer, "tokenizer_path", None)
-        if not isinstance(tokenizer_path, str) or not tokenizer_path:
-            raise ValueError(
-                "ZephonDataLoader requires a tokenizer with a tokenizer_path"
-            )
 
         datasets = [
             Dataset.from_path(name=source.name, path=source.path, fmt=source.fmt)
@@ -207,27 +206,38 @@ class ZephonDataLoader(BaseDataLoader):
         pipeline = Pipeline(work_source)
         if config.fetch_parallelism is not None:
             pipeline = pipeline.fetch_parallelism(config.fetch_parallelism)
-        self._pipeline = (
-            pipeline.tokenize(
+
+        if config.input_mode == "online":
+            tokenizer_path = getattr(tokenizer, "tokenizer_path", None)
+            if not isinstance(tokenizer_path, str) or not tokenizer_path:
+                raise ValueError(
+                    "Online Zephon input requires a tokenizer with a tokenizer_path"
+                )
+            pipeline = pipeline.tokenize(
                 tokenizer_id=tokenizer_path,
                 field=config.text_field,
                 max_length=max_context_length + 1,
                 split_long_samples=True,
                 special_tokens="bos_eos",
-            )
-            .pack_flat(
+            ).pack_flat(
                 max_length=num_tokens_per_batch + 1,
                 algorithm="wrap",
                 emit_positions=True,
             )
-            .batch(1, drop_last=True)
-            .options(**self._runtime_options(config, dp_world_size, dp_rank))
+            pipeline.preflight_tokenizers()
+
+        self._pipeline = pipeline.batch(1, drop_last=True).options(
+            **self._runtime_options(config, dp_world_size, dp_rank)
         )
-        self._pipeline.preflight_tokenizers()
         self._tokens_field = "input_ids"
+        self._pretokenized_record_length = (
+            num_tokens_per_batch + 1 if config.input_mode == "pretokenized" else None
+        )
 
     @staticmethod
     def _validate_config(config: Config, dp_world_size: int) -> None:
+        if config.input_mode not in ("online", "pretokenized"):
+            raise ValueError("dataloader.input_mode must be 'online' or 'pretokenized'")
         if not config.sources:
             raise ValueError("dataloader.sources must not be empty")
         source_names = [source.name for source in config.sources]
@@ -279,6 +289,10 @@ class ZephonDataLoader(BaseDataLoader):
 
     def __iter__(self) -> Iterator[TrainerBatch]:
         for sample_batch in self._pipeline:
+            if self._pretokenized_record_length is not None:
+                self._validate_pretokenized_batch(
+                    sample_batch, self._pretokenized_record_length
+                )
             converted_batch = sample_batch.to_training(
                 tokens_field=self._tokens_field,
                 return_labels=True,
@@ -295,6 +309,36 @@ class ZephonDataLoader(BaseDataLoader):
             if "positions" in converted_batch:
                 training_batch["positions"] = converted_batch["positions"].squeeze(0)
             yield training_batch
+
+    def _validate_pretokenized_batch(
+        self, sample_batch: Any, expected_length: int
+    ) -> None:
+        payload = sample_batch.records[0].payload
+        if not isinstance(payload, Mapping):
+            raise ValueError("Pretokenized Zephon records must be mappings")
+        if self._tokens_field not in payload:
+            raise ValueError(
+                f"Pretokenized Zephon records require '{self._tokens_field}'"
+            )
+        tokens = payload[self._tokens_field]
+        try:
+            actual_length = len(tokens)
+        except TypeError as exc:
+            raise ValueError(
+                f"Pretokenized field '{self._tokens_field}' must be a sequence"
+            ) from exc
+        if actual_length != expected_length:
+            raise ValueError(
+                f"Pretokenized field '{self._tokens_field}' must contain "
+                f"num_tokens_per_batch + 1 = {expected_length} values; got "
+                f"{actual_length}"
+            )
+        positions = payload.get("positions")
+        if positions is not None and len(positions) != expected_length:
+            raise ValueError(
+                "Pretokenized field 'positions' must have the same length as "
+                f"'{self._tokens_field}'"
+            )
 
     def state_dict(self) -> dict[str, bytes]:
         """Store the complete Zephon checkpoint as one DCP-safe opaque value."""
@@ -322,6 +366,7 @@ def zephon_dataloader(
     *,
     data_config: str | None = None,
     sources: list[Mapping[str, Any]] | None = None,
+    input_mode: Literal["online", "pretokenized"] | None = None,
     text_field: str | None = None,
     cache_dir: str | None = None,
     seed: int | None = None,
@@ -409,6 +454,7 @@ def _derive_zephon_config(
     elif "sources" not in deltas:
         deltas["sources"] = _demo_sources()
     for name, value in {
+        "input_mode": input_mode,
         "text_field": text_field,
         "cache_dir": cache_dir,
         "seed": seed,

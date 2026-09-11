@@ -12,6 +12,7 @@ Zephon normalizes weights automatically.
 | `validation_local_jsonl.toml` | Separate deterministic validation source. |
 | `weighted_local_jsonl.toml` | Local 3:1 prose/code mixture. |
 | `elastic_local_jsonl.toml` | Local 3:1 mixture with two canonical data lanes. |
+| `pretokenized_local_jsonl.toml` | Pretokenized, prepacked local records. |
 | `hf_squad.toml` | Public Hugging Face Hub source. |
 
 Use the recipe with the opt-in override described in
@@ -49,6 +50,18 @@ examples/zephon/run_training_smoke.sh ./outputs/zephon-training-smoke
 The first launch trains through step 2 and saves full checkpoints. The second
 launch restores the latest completed checkpoint and trains step 3 with a fresh
 Zephon loader. Use a new output path for each invocation.
+
+## Pretokenized and prepacked records
+
+Set `input_mode = "pretokenized"` when every source record already contains
+one complete `input_ids` sequence. Its length must be the configured TorchTitan
+token budget plus one: the loader shifts the final value into the labels and
+therefore emits exactly `num_tokens_per_microbatch_per_dp_rank` input tokens.
+An optional `positions` sequence must have the same original length.
+
+The [`pretokenized_local_jsonl.toml`](pretokenized_local_jsonl.toml) recipe and
+checked-in fixture demonstrate this path. Zephon skips both tokenization and
+packing; mixing, checkpointing, and elastic resume retain the same behavior.
 
 ## Elastic launch
 
