@@ -301,8 +301,10 @@ class ZephonDataLoader(BaseDataLoader):
         return {"zephon": pickle.dumps(self._pipeline.checkpoint())}
 
     def load_state_dict(self, state_dict: Mapping[str, Any]) -> None:
-        if not state_dict or "zephon" not in state_dict:
+        if not state_dict:
             return
+        if "zephon" not in state_dict:
+            raise ValueError("Zephon dataloader checkpoint is missing 'zephon' state")
         checkpoint = state_dict["zephon"]
         if not isinstance(checkpoint, bytes):
             raise ValueError("Expected Zephon checkpoint state to be bytes")

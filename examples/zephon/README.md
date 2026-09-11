@@ -11,7 +11,7 @@ Zephon normalizes weights automatically.
 | `local_jsonl.toml` | Minimal 50/50 local JSONL smoke test. |
 | `validation_local_jsonl.toml` | Separate deterministic validation source. |
 | `weighted_local_jsonl.toml` | Local 3:1 prose/code mixture. |
-| `elastic_local_jsonl.toml` | Local mixture with two canonical data lanes. |
+| `elastic_local_jsonl.toml` | Local 3:1 mixture with two canonical data lanes. |
 | `hf_squad.toml` | Public Hugging Face Hub source. |
 
 Use the recipe with the opt-in override described in
@@ -21,6 +21,21 @@ paths, and mixture weights easy to review and adapt.
 
 TorchTitan supplies the tokenizer to Zephon, so these data recipes do not
 contain a tokenizer path.
+
+## Elastic resume demo
+
+Run the complete deterministic-resume demonstration on a CPU-only macOS or
+Linux machine:
+
+```bash
+uv run --no-sync python examples/zephon/elastic_resume_demo.py
+```
+
+The command creates an uninterrupted two-worker reference stream, checkpoints
+the same stream after two steps, resumes it with one worker, and compares the
+global token batches by fingerprint. It exits unsuccessfully if any token or
+other trainer-batch field differs. Pass `--work-dir PATH` to keep each run's
+checkpoint and JSON stream records for inspection.
 
 ## Elastic launch
 

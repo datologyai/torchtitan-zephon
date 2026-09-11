@@ -114,6 +114,37 @@ def test_zephon_dataloader_validates_sources() -> None:
     with pytest.raises(ValueError, match="does not yet support.*max_num_documents"):
         ZephonDataLoader.Config(max_num_documents=4)
 
+    with pytest.raises(ValueError, match="weights must all be positive"):
+        ZephonDataLoader._validate_config(
+            ZephonDataLoader.Config(
+                sources=[ZephonSource(name="prose", path="/data", weight=0)]
+            ),
+            dp_world_size=1,
+        )
+
+
+def test_zephon_dataloader_validates_distributed_configuration() -> None:
+    from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
+
+    with pytest.raises(ValueError, match="must be at least"):
+        ZephonDataLoader._validate_config(
+            ZephonDataLoader.Config(canonical_replicas=1), dp_world_size=2
+        )
+
+    with pytest.raises(ValueError, match="aggregate_dir and dataloader.run_id"):
+        ZephonDataLoader._validate_config(
+            ZephonDataLoader.Config(canonical_replicas=2), dp_world_size=2
+        )
+
+    with pytest.raises(ValueError, match="aggregate_dir and dataloader.run_id"):
+        ZephonDataLoader._validate_config(
+            ZephonDataLoader.Config(
+                canonical_replicas=2,
+                aggregate_dir="/aggregate",
+            ),
+            dp_world_size=2,
+        )
+
 
 def test_zephon_override_parses_weighted_local_and_hf_sources() -> None:
     from torchtitan.overrides.zephon_dataloader import (
@@ -246,6 +277,12 @@ def test_zephon_dataloader_yields_torchtitan_batches_and_checkpoints() -> None:
 
     checkpoint = loader.state_dict()
     assert isinstance(checkpoint["zephon"], bytes)
+
+    loader.load_state_dict({})
+    with pytest.raises(ValueError, match="missing 'zephon' state"):
+        loader.load_state_dict({"unexpected": b"state"})
+    with pytest.raises(ValueError, match="checkpoint state to be bytes"):
+        loader.load_state_dict({"zephon": "not-bytes"})
 
     restored_loader = make_loader()
     restored_loader.load_state_dict(checkpoint)
