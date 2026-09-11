@@ -174,13 +174,12 @@ def test_zephon_dataloader_rejects_invalid_pipeline_settings(
 def test_zephon_override_parses_weighted_local_and_hf_sources() -> None:
     pytest.importorskip("zephon")
 
-    from zephon import MixtureSpec
-
     from torchtitan.overrides.zephon_dataloader import (
         zephon_dataloader,
         ZephonDataLoader,
         ZephonSource,
     )
+    from zephon import MixtureSpec
 
     config = zephon_dataloader(
         _grain_config(),
@@ -328,8 +327,8 @@ def test_zephon_pretokenized_recipe_skips_tokenization_and_resumes() -> None:
     pytest.importorskip("zephon")
 
     from torchtitan.overrides.zephon_dataloader import (
-        ZephonDataLoader,
         zephon_dataloader,
+        ZephonDataLoader,
     )
 
     repo_root = Path(__file__).resolve().parents[2]

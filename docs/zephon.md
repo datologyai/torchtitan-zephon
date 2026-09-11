@@ -1,29 +1,31 @@
 # Zephon dataloader override
 
-This opt-in example replaces TorchTitan's training and validation dataloaders
-with Zephon pipelines. It is intentionally small: models, optimizers, trainer
-logic, and checkpoint coordination remain unchanged.
+This opt-in reference integration replaces TorchTitan's training and
+validation `GrainDataLoader` instances with Zephon. Models, tokenizers,
+optimizers, trainer logic, and TorchTitan's distributed checkpointer remain
+unchanged.
 
-## What this demo changes
+The integration demonstrates three Zephon capabilities in a small, adaptable
+surface: named weighted mixtures, deterministic resume through TorchTitan
+checkpoints, and elastic resume at a different data-parallel degree.
 
 The training override replaces the `dataloader` node. The validation override
 replaces `validator.dataloader`. Zephon reads each node's recipe, constructs a
 deterministic mixture, tokenizes and packs text online, and stores training
 state inside TorchTitan checkpoints.
 
-The mechanism is an ordinary TorchTitan override; see the
-[override reference](../torchtitan/overrides/README.md) for its general model.
+## Install and run
 
-## Quickstart
-
-Until Zephon has a suitable public PyPI release, this repository pins a
-temporary HTTPS Git-tag installation in `requirements-zephon.txt`. Install it
-into the environment used to run TorchTitan, then launch the small local JSONL
-example:
+Until Zephon has a suitable public PyPI release, `requirements-zephon.txt` pins
+a release tag from the Zephon Git repository:
 
 ```bash
 uv pip install --python .venv/bin/python -r requirements-zephon.txt
+```
 
+Run the checked-in local example on one CUDA GPU:
+
+```bash
 NGPU=1 MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh \
   --override.imports \
   'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"examples/zephon/local_jsonl.toml"}' \
@@ -33,8 +35,8 @@ NGPU=1 MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh \
   --training.num_tokens_per_microbatch_per_dp_rank 256
 ```
 
-The checked-in data is deliberately tiny and exists only to make the command
-reproducible. Replace its recipe with real sources for training.
+The tiny checked-in data makes the command reproducible; it is not intended as
+a representative training corpus.
 
 Training shuffles and repeats its mixture. Validation is deterministic and
 unshuffled. With `validator.steps = -1`, Zephon stops after every validation
@@ -43,14 +45,15 @@ TorchTitan repeats the validation stream until that bound, matching its stock
 loader semantics. Keep validation in a separate recipe so training mixtures
 cannot accidentally become evaluation data.
 
-## Data recipes
+## Configure sources and mixtures
 
-Keep Zephon settings and source definitions in a TOML recipe. A source has a
-stable name, path, optional `fmt`, and optional relative weight:
+Zephon-specific configuration lives in a TOML recipe:
 
 ```toml
+input_mode = "online"
 text_field = "text"
 cache_dir = "/local-ssd/zephon"
+seed = 42
 
 [[sources]]
 name = "web"
@@ -60,45 +63,83 @@ weight = 3.0
 
 [[sources]]
 name = "code"
-path = "s3://example-bucket/code"
+path = "hf://organization/code/train"
 weight = 1.0
 ```
 
-Zephon uses the tokenizer built by the selected TorchTitan configuration, so
-the recipe deliberately does not contain a tokenizer path. Configure the
-tokenizer with the usual TorchTitan model configuration.
+Each source has a stable name and path. `fmt` maps directly to
+`Dataset.from_path(..., fmt=...)`; omit it to use Zephon's format detection.
+Weights are relative and Zephon normalizes them, so `3.0` and `1.0` select a
+75/25 mixture. `cache_dir` enables Zephon's file cache for all sources, not
+only `hf://` paths.
 
-`fmt` maps directly to `Dataset.from_path(..., fmt=...)`; omit it to use
-Zephon's format detection. Zephon normalizes relative weights, so the example
-requests a 75/25 web/code mixture. `cache_dir` is explicit: when supplied, it
-enables a per-node cache for every file-backed source, including cloud URIs and
-network-mounted paths.
+The [example catalog](../examples/zephon/README.md) includes equal-weight,
+weighted, Hugging Face, elastic, and pretokenized recipes. Zephon reads Hugging
+Face Parquet shards directly; the pinned `hf` extra supplies the needed support.
 
-For a Hugging Face Hub source, use an `hf://` URI. The pinned requirement
-includes Zephon's `hf` extra. The included
-[`hf_squad.toml`](../examples/zephon/hf_squad.toml) shows the full form.
+## Choose the input contract
 
-Zephon reads Hugging Face Parquet shards directly; the `datasets` package is
-not required.
+`input_mode = "online"` expects a text field. Zephon tokenizes with the
+TorchTitan tokenizer, splits long samples, adds BOS/EOS boundaries, and packs
+the result into complete training sequences.
 
-## Why Zephon?
+`input_mode = "pretokenized"` skips tokenization and packing. Every record must
+contain one `input_ids` sequence whose length is the configured per-rank
+microbatch token budget plus one. Optional `positions` must have the same
+length. The extra token becomes the final label, leaving exactly the requested
+number of trainer input tokens.
 
-- **Weighted mixtures:** sources are named and weighted in one small recipe;
-  their raw weights need not sum to one.
-- **Elastic deterministic resume:** Zephon checkpoints the data stream by
-  canonical lanes rather than current worker count, so a run can resume with a
-  different data-parallel degree while retaining deterministic global progress.
+## Checkpoint and elastic resume contract
 
-## More examples and development
+`ZephonDataLoader.state_dict()` stores Zephon's complete public checkpoint
+object as one opaque byte value. TorchTitan's distributed checkpointer saves
+that value alongside model, optimizer, scheduler, and trainer state. Restore
+must use the latest completed TorchTitan checkpoint; an interrupted or partial
+checkpoint is not a valid resume point.
 
-The [recipe catalog](../examples/zephon/README.md) includes equal-weight,
-weighted, Hugging Face, and elastic local examples. Its
-[elastic launch section](../examples/zephon/README.md#elastic-launch) has the
-two-GPU command.
+For elastic resume, keep these values stable:
 
-For contribution and test guidance, see [CONTRIBUTING.md](../CONTRIBUTING.md)
-and [tests/README.md](../tests/README.md).
+- `canonical_replicas`: the fixed logical data-lane count; it must be at least
+  the current DP world size.
+- `aggregate_dir`: shared storage used to aggregate lane checkpoint state.
+- `run_id`: the stable identity of this data stream.
+- Recipe, tokenizer, token budgets, and seed.
 
-To validate an installed release in a fresh environment, run
-`scripts/validate_zephon_install.sh`. Set `ZEPHON_WHEEL=/path/to/zephon.whl` to
-test a locally built wheel instead of the temporary Git tag.
+The current DP world size may change. The canonical lane count must not.
+
+Run the exact 2-worker to 1-worker proof on CPU-only macOS or Linux:
+
+```bash
+uv run --no-sync python examples/zephon/elastic_resume_demo.py
+```
+
+It builds an uninterrupted two-worker reference, checkpoints after two steps,
+resumes with one worker, and compares every TorchTitan trainer-batch field. A
+mismatch exits nonzero.
+
+Run the real TorchTitan checkpoint coordinator on one CUDA GPU:
+
+```bash
+examples/zephon/run_training_smoke.sh ./outputs/zephon-training-smoke
+```
+
+For the manual multi-GPU to single-GPU commands, see the catalog's
+[elastic TorchTitan launch](../examples/zephon/README.md#elastic-torchtitan-launch).
+
+## Validation and scope
+
+Run the focused tests with:
+
+```bash
+uv run pytest tests/unit_tests/test_zephon_dataloader_override.py \
+  tests/unit_tests/test_zephon_elastic_resume.py
+```
+
+`scripts/validate_zephon_install.sh` creates a clean environment, installs the
+pinned release rather than a sibling checkout, and runs the release-facing
+tests. Set `ZEPHON_WHEEL=/path/to/zephon.whl` to validate a local release wheel.
+
+This example intentionally does not forward arbitrary Zephon options or
+promise a general pretokenized schema. The explicit choices and temporary
+constraints are recorded in the
+[defaults audit](zephon_defaults_audit.md).

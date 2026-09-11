@@ -1,3 +1,5 @@
 # Temporary Git-tag installation until Zephon has a suitable public PyPI release.
 zephon[hf] @ git+https://github.com/datologyai/zephon.git@v0.0.1b23
 transformers>=4.44.0
+# Transformers 5.15 accepts <=0.23.0, while TorchTitan otherwise permits newer.
+tokenizers>=0.22.0,<=0.23.0

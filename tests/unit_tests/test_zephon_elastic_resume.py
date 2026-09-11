@@ -73,6 +73,7 @@ path = "unused"
         cwd=repo_root,
         capture_output=True,
         text=True,
+        check=False,
     )
 
     assert result.returncode != 0

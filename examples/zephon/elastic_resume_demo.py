@@ -18,7 +18,7 @@ import sys
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
@@ -74,8 +74,8 @@ def _worker(args: argparse.Namespace) -> None:
 
     from torchtitan.components.tokenizer import HuggingFaceTokenizer
     from torchtitan.overrides.zephon_dataloader import (
-        ZephonDataLoader,
         _load_data_config,
+        ZephonDataLoader,
     )
 
     dist.init_process_group("gloo")
@@ -175,6 +175,7 @@ def _run_phase(
         env=env,
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode:
         sys.stderr.write(result.stdout)

@@ -63,7 +63,7 @@ The [`pretokenized_local_jsonl.toml`](pretokenized_local_jsonl.toml) recipe and
 checked-in fixture demonstrate this path. Zephon skips both tokenization and
 packing; mixing, checkpointing, and elastic resume retain the same behavior.
 
-## Elastic launch
+## Elastic TorchTitan launch
 
 The elastic recipe fixes the data stream at two canonical lanes. On one host
 with two GPUs, provide a shared aggregate directory and stable run ID:
@@ -82,3 +82,24 @@ CUDA_VISIBLE_DEVICES=0,1 NGPU=2 MODULE=llama3 CONFIG=llama3_debugmodel ./run_tra
 
 Keep the recipe, canonical lane count, aggregate directory, run ID, and train
 step token budget unchanged when resuming with a different GPU count.
+
+After the two-GPU run completes step 4, resume its latest completed checkpoint
+with one GPU:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 NGPU=1 MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh \
+  --override.imports 'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"examples/zephon/elastic_local_jsonl.toml","aggregate_dir":"/mnt/zephon-aggregate","run_id":"local-elastic-demo"}' \
+  --training.steps 6 \
+  --training.max_context_length 128 \
+  --training.num_tokens_per_microbatch_per_dp_rank 256 \
+  --training.num_tokens_per_train_step 512 \
+  --checkpoint.enable \
+  --checkpoint.interval 2 \
+  --dump_folder ./outputs/zephon-elastic
+```
+
+The per-rank microbatch is still 256 tokens, while each train step still
+consumes 512 tokens globally. TorchTitan therefore accumulates two
+microbatches on the single GPU. Resume only from a completed checkpoint and do
+not change the recipe, canonical lane count, aggregate directory, run ID,
+token budgets, tokenizer, or seed.

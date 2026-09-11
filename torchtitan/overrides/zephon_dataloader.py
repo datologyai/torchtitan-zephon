@@ -10,9 +10,9 @@
 
 The overrides replace TorchTitan's training and validation ``GrainDataLoader``
 instances with Zephon pipelines. They deliberately keep the integration small:
-named data sources, deterministic mixtures, online tokenization and packing,
-and Zephon checkpoint state. Production-specific features belong in an
-integration package, not in this illustrative override.
+named data sources, deterministic mixtures, online or pretokenized input, and
+Zephon checkpoint state. Production-specific features belong in an integration
+package, not in this illustrative override.
 """
 
 from __future__ import annotations
@@ -102,7 +102,9 @@ def _load_data_config(data_config: str) -> dict[str, Any]:
         )
     raw_sources = values.get("sources")
     if not isinstance(raw_sources, list):
-        raise ValueError("Zephon data recipes must contain a 'sources' list")
+        raise ValueError(  # noqa: TRY004
+            "Zephon data recipes must contain a 'sources' list"
+        )
 
     recipe_dir = recipe_path.parent
     sources = _parse_sources(raw_sources)
@@ -216,6 +218,7 @@ class ZephonDataLoader(BaseDataLoader):
             pipeline = pipeline.tokenize(
                 tokenizer_id=tokenizer_path,
                 field=config.text_field,
+                add_attention_mask=False,
                 max_length=max_context_length + 1,
                 split_long_samples=True,
                 special_tokens="bos_eos",
@@ -342,7 +345,9 @@ class ZephonDataLoader(BaseDataLoader):
     ) -> None:
         payload = sample_batch.records[0].payload
         if not isinstance(payload, Mapping):
-            raise ValueError("Pretokenized Zephon records must be mappings")
+            raise ValueError(  # noqa: TRY004
+                "Pretokenized Zephon records must be mappings"
+            )
         if self._tokens_field not in payload:
             raise ValueError(
                 f"Pretokenized Zephon records require '{self._tokens_field}'"
@@ -361,11 +366,18 @@ class ZephonDataLoader(BaseDataLoader):
                 f"{actual_length}"
             )
         positions = payload.get("positions")
-        if positions is not None and len(positions) != expected_length:
-            raise ValueError(
-                "Pretokenized field 'positions' must have the same length as "
-                f"'{self._tokens_field}'"
-            )
+        if positions is not None:
+            try:
+                positions_length = len(positions)
+            except TypeError as exc:
+                raise ValueError(
+                    "Pretokenized field 'positions' must be a sequence"
+                ) from exc
+            if positions_length != expected_length:
+                raise ValueError(
+                    "Pretokenized field 'positions' must have the same length as "
+                    f"'{self._tokens_field}'"
+                )
 
     def state_dict(self) -> dict[str, bytes]:
         """Store the complete Zephon checkpoint as one DCP-safe opaque value."""
@@ -378,7 +390,9 @@ class ZephonDataLoader(BaseDataLoader):
             raise ValueError("Zephon dataloader checkpoint is missing 'zephon' state")
         checkpoint = state_dict["zephon"]
         if not isinstance(checkpoint, bytes):
-            raise ValueError("Expected Zephon checkpoint state to be bytes")
+            raise ValueError(  # noqa: TRY004
+                "Expected Zephon checkpoint state to be bytes"
+            )
         self._pipeline.restore(pickle.loads(checkpoint))
 
 
@@ -408,6 +422,7 @@ def zephon_dataloader(
         config,
         data_config=data_config,
         sources=sources,
+        input_mode=input_mode,
         text_field=text_field,
         cache_dir=cache_dir,
         seed=seed,
@@ -432,6 +447,7 @@ def zephon_validation_dataloader(
     *,
     data_config: str | None = None,
     sources: list[Mapping[str, Any]] | None = None,
+    input_mode: Literal["online", "pretokenized"] | None = None,
     text_field: str | None = None,
     cache_dir: str | None = None,
     seed: int | None = None,
@@ -446,6 +462,7 @@ def zephon_validation_dataloader(
         config,
         data_config=data_config,
         sources=sources,
+        input_mode=input_mode,
         text_field=text_field,
         cache_dir=cache_dir,
         seed=seed,
@@ -464,6 +481,7 @@ def _derive_zephon_config(
     *,
     data_config: str | None,
     sources: list[Mapping[str, Any]] | None,
+    input_mode: Literal["online", "pretokenized"] | None,
     text_field: str | None,
     cache_dir: str | None,
     seed: int | None,
