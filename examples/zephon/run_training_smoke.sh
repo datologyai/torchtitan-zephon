@@ -19,7 +19,9 @@ fi
 cd "${repo_root}"
 
 common_args=(
-    --override.imports 'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"examples/zephon/local_jsonl.toml"}'
+    --override.imports
+    'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"examples/zephon/local_jsonl.toml"}'
+    'torchtitan.overrides.zephon_dataloader.zephon_validation_dataloader={"data_config":"examples/zephon/validation_local_jsonl.toml"}'
     --training.max_context_length 128
     --training.num_tokens_per_microbatch_per_dp_rank 256
     --training.num_tokens_per_train_step 256

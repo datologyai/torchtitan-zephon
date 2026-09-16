@@ -31,11 +31,11 @@ checkpointing, memory use, or distributed correctness.
 
 ## Explicit Zephon choices for defaults review
 
-| Choice | Override | Zephon default | Reason |
+| Choice | Training | Validation | Reason |
 | --- | --- | --- | --- |
-| Exhausted source policy | Repeat | Finite pass | TorchTitan training is step-based and expects an effectively unbounded stream. |
-| Shard shuffle | Enabled | Enabled | Stated explicitly because it is part of the deterministic ordering contract. |
-| Within-shard shuffle | Enabled | Disabled | Avoid long runs of adjacent records from large shards. |
+| Exhausted source policy | Repeat | Finite pass for `steps = -1`; repeat for bounded validation | Training is step-based, while validation follows TorchTitan's configured step policy. |
+| Shard shuffle | Enabled | Disabled | Evaluation order stays stable and easy to inspect. |
+| Within-shard shuffle | Enabled | Disabled | Training avoids long runs of adjacent records; evaluation preserves source order. |
 | Long sample handling | Split | Do not split | Preserve all usable tokens instead of truncating long training records. |
 | Special tokens | BOS and EOS | BOS and EOS | Stated explicitly because sample boundaries are part of the training contract. |
 | Packing algorithm | Wrap | First fit | Keep the example stream simple and deterministic across canonical lanes. |

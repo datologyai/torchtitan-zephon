@@ -70,7 +70,9 @@ with two GPUs, provide a shared aggregate directory and stable run ID:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 NGPU=2 MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh \
-  --override.imports 'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"examples/zephon/elastic_local_jsonl.toml","aggregate_dir":"/mnt/zephon-aggregate","run_id":"local-elastic-demo"}' \
+  --override.imports \
+  'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"examples/zephon/elastic_local_jsonl.toml","aggregate_dir":"/mnt/zephon-aggregate","run_id":"local-elastic-demo"}' \
+  'torchtitan.overrides.zephon_dataloader.zephon_validation_dataloader={"data_config":"examples/zephon/validation_local_jsonl.toml"}' \
   --training.steps 4 \
   --training.max_context_length 128 \
   --training.num_tokens_per_microbatch_per_dp_rank 256 \
@@ -88,7 +90,9 @@ with one GPU:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 NGPU=1 MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh \
-  --override.imports 'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"examples/zephon/elastic_local_jsonl.toml","aggregate_dir":"/mnt/zephon-aggregate","run_id":"local-elastic-demo"}' \
+  --override.imports \
+  'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"examples/zephon/elastic_local_jsonl.toml","aggregate_dir":"/mnt/zephon-aggregate","run_id":"local-elastic-demo"}' \
+  'torchtitan.overrides.zephon_dataloader.zephon_validation_dataloader={"data_config":"examples/zephon/validation_local_jsonl.toml"}' \
   --training.steps 6 \
   --training.max_context_length 128 \
   --training.num_tokens_per_microbatch_per_dp_rank 256 \
