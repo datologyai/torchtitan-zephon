@@ -78,9 +78,7 @@ def test_zephon_dataloader_validates_sources() -> None:
         )
 
     with pytest.raises(ValueError, match="does not yet support.*max_num_documents"):
-        ZephonDataLoader._validate_config(
-            ZephonDataLoader.Config(max_num_documents=4), dp_world_size=1
-        )
+        ZephonDataLoader.Config(max_num_documents=4)
 
 
 def test_zephon_override_parses_weighted_local_and_hf_sources() -> None:

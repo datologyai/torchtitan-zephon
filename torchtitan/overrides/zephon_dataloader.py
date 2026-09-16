@@ -154,6 +154,14 @@ class ZephonDataLoader(BaseDataLoader):
         run_id: str | None = None
         fetch_parallelism: int | None = None
 
+        def __post_init__(self) -> None:
+            if self.max_num_documents is not None:
+                raise ValueError(
+                    "ZephonDataLoader does not yet support "
+                    "dataloader.max_num_documents"
+                )
+            BaseDataLoader.Config.__post_init__(self)
+
     def __init__(
         self,
         config: Config,
@@ -213,10 +221,6 @@ class ZephonDataLoader(BaseDataLoader):
 
     @staticmethod
     def _validate_config(config: Config, dp_world_size: int) -> None:
-        if config.max_num_documents is not None:
-            raise ValueError(
-                "ZephonDataLoader does not yet support dataloader.max_num_documents"
-            )
         if not config.sources:
             raise ValueError("dataloader.sources must not be empty")
         source_names = [source.name for source in config.sources]
