@@ -140,6 +140,8 @@ pinned release rather than a sibling checkout, and runs the release-facing
 tests. Set `ZEPHON_WHEEL=/path/to/zephon.whl` to validate a local release wheel.
 
 This example intentionally does not forward arbitrary Zephon options or
-promise a general pretokenized schema. The explicit choices and temporary
-constraints are recorded in the
+promise a general pretokenized schema.
+`dataloader.max_num_documents` is not yet supported by Zephon; setting it fails
+configuration validation instead of being ignored. The explicit choices and
+temporary constraints are recorded in the
 [defaults audit](zephon_defaults_audit.md).

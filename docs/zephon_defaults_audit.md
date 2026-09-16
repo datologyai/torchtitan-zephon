@@ -46,6 +46,8 @@ checkpointing, memory use, or distributed correctness.
   Zephon's public tokenizer API currently accepts a tokenizer identifier.
 - Pretokenized mode validates records as they are fetched. It does not perform a
   separate declarative schema scan before iteration.
+- TorchTitan's `max_num_documents` loader option is rejected until Zephon can
+  provide the corresponding fixed-shape document metadata contract.
 - Zephon checkpoint state is opaque bytes inside DCP. A future stable,
   structured serialization format could remove the pickle boundary.
 
