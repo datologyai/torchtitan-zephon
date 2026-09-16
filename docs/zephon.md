@@ -1,14 +1,15 @@
 # Zephon dataloader override
 
-This opt-in example replaces TorchTitan's training text dataloader with a
-Zephon pipeline. It is intentionally small: it leaves models, training, and
-all non-training dataloaders unchanged.
+This opt-in example replaces TorchTitan's training and validation dataloaders
+with Zephon pipelines. It is intentionally small: models, optimizers, trainer
+logic, and checkpoint coordination remain unchanged.
 
 ## What this demo changes
 
-The override replaces only the training `dataloader` node. Zephon reads the
-configured sources, constructs a deterministic mixture, tokenizes and packs
-text online, and stores its state inside TorchTitan checkpoints.
+The training override replaces the `dataloader` node. The validation override
+replaces `validator.dataloader`. Zephon reads each node's recipe, constructs a
+deterministic mixture, tokenizes and packs text online, and stores training
+state inside TorchTitan checkpoints.
 
 The mechanism is an ordinary TorchTitan override; see the
 [override reference](../torchtitan/overrides/README.md) for its general model.
@@ -24,7 +25,9 @@ uv pip install --python .venv/bin/python \
   transformers
 
 NGPU=1 MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh \
-  --override.imports 'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"examples/zephon/local_jsonl.toml"}' \
+  --override.imports \
+  'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"examples/zephon/local_jsonl.toml"}' \
+  'torchtitan.overrides.zephon_dataloader.zephon_validation_dataloader={"data_config":"examples/zephon/validation_local_jsonl.toml"}' \
   --training.steps 10 \
   --training.max_context_length 128 \
   --training.num_tokens_per_microbatch_per_dp_rank 256
@@ -32,6 +35,13 @@ NGPU=1 MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh \
 
 The checked-in data is deliberately tiny and exists only to make the command
 reproducible. Replace its recipe with real sources for training.
+
+Training shuffles and repeats its mixture. Validation is deterministic and
+unshuffled. With `validator.steps = -1`, Zephon stops after every validation
+source has completed a pass. With a positive validation step count,
+TorchTitan repeats the validation stream until that bound, matching its stock
+loader semantics. Keep validation in a separate recipe so training mixtures
+cannot accidentally become evaluation data.
 
 ## Data recipes
 

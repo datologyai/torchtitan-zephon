@@ -9,6 +9,7 @@ Zephon normalizes weights automatically.
 | Recipe | Purpose |
 | --- | --- |
 | `local_jsonl.toml` | Minimal 50/50 local JSONL smoke test. |
+| `validation_local_jsonl.toml` | Separate deterministic validation source. |
 | `weighted_local_jsonl.toml` | Local 3:1 prose/code mixture. |
 | `elastic_local_jsonl.toml` | Local mixture with two canonical data lanes. |
 | `hf_squad.toml` | Public Hugging Face Hub source. |

@@ -6,13 +6,13 @@
 
 # pyrefly: ignore-errors
 
-"""Example Zephon dataloader override for TorchTitan.
+"""Example Zephon training and validation dataloaders for TorchTitan.
 
-The override replaces only the training ``GrainDataLoader`` with a
-Zephon pipeline. It deliberately keeps the integration small: two local JSONL
-sources, a deterministic mixture, online tokenization and packing, and Zephon
-checkpoint state. Production-specific features belong in an integration
-package, not in this illustrative override.
+The overrides replace TorchTitan's training and validation ``GrainDataLoader``
+instances with Zephon pipelines. They deliberately keep the integration small:
+named data sources, deterministic mixtures, online tokenization and packing,
+and Zephon checkpoint state. Production-specific features belong in an
+integration package, not in this illustrative override.
 """
 
 from __future__ import annotations
@@ -149,6 +149,12 @@ class ZephonDataLoader(BaseDataLoader):
 
         seed: int = 42
         chunk_size: int = 64
+        shuffle: bool = True
+        """Shuffle shards and records; validation overrides disable this."""
+
+        repeat: bool = True
+        """Repeat indefinitely, or stop after every source completes a pass."""
+
         canonical_replicas: int | None = None
         aggregate_dir: str | None = None
         run_id: str | None = None
@@ -157,8 +163,7 @@ class ZephonDataLoader(BaseDataLoader):
         def __post_init__(self) -> None:
             if self.max_num_documents is not None:
                 raise ValueError(
-                    "ZephonDataLoader does not yet support "
-                    "dataloader.max_num_documents"
+                    "ZephonDataLoader does not yet support dataloader.max_num_documents"
                 )
             BaseDataLoader.Config.__post_init__(self)
 
@@ -185,17 +190,19 @@ class ZephonDataLoader(BaseDataLoader):
             Dataset.from_path(name=source.name, path=source.path, fmt=source.fmt)
             for source in config.sources
         ]
-        work_source = StaticMixtureWorkSource(
-            datasets=datasets,
-            mixture=MixtureSpec(
+        work_source_options: dict[str, Any] = {
+            "datasets": datasets,
+            "mixture": MixtureSpec(
                 {source.name: source.weight for source in config.sources}
             ),
-            chunk_size=config.chunk_size,
-            seed=config.seed,
-            exhausted_policy="repeat",
-            shuffle_shards=True,
-            shuffle_within_shard=True,
-        )
+            "chunk_size": config.chunk_size,
+            "seed": config.seed,
+            "shuffle_shards": config.shuffle,
+            "shuffle_within_shard": config.shuffle,
+        }
+        if config.repeat:
+            work_source_options["exhausted_policy"] = "repeat"
+        work_source = StaticMixtureWorkSource(**work_source_options)
 
         pipeline = Pipeline(work_source)
         if config.fetch_parallelism is not None:
@@ -322,7 +329,78 @@ def zephon_dataloader(
     run_id: str | None = None,
     fetch_parallelism: int | None = None,
 ) -> ZephonDataLoader.Config:
-    """Replace the stock text loader with the compact Zephon demonstration."""
+    """Replace the training loader with a shuffled, repeating Zephon stream."""
+    return _derive_zephon_config(
+        config,
+        data_config=data_config,
+        sources=sources,
+        text_field=text_field,
+        cache_dir=cache_dir,
+        seed=seed,
+        chunk_size=chunk_size,
+        canonical_replicas=canonical_replicas,
+        aggregate_dir=aggregate_dir,
+        run_id=run_id,
+        fetch_parallelism=fetch_parallelism,
+        shuffle=True,
+        repeat=True,
+    )
+
+
+@override(
+    target=GrainDataLoader.Config,
+    fqns=["validator.dataloader"],
+    exact=True,
+    description="Zephon deterministic validation dataloader",
+)
+def zephon_validation_dataloader(
+    config: GrainDataLoader.Config,
+    *,
+    data_config: str | None = None,
+    sources: list[Mapping[str, Any]] | None = None,
+    text_field: str | None = None,
+    cache_dir: str | None = None,
+    seed: int | None = None,
+    chunk_size: int | None = None,
+    canonical_replicas: int | None = None,
+    aggregate_dir: str | None = None,
+    run_id: str | None = None,
+    fetch_parallelism: int | None = None,
+) -> ZephonDataLoader.Config:
+    """Replace the validation loader with an unshuffled Zephon stream."""
+    return _derive_zephon_config(
+        config,
+        data_config=data_config,
+        sources=sources,
+        text_field=text_field,
+        cache_dir=cache_dir,
+        seed=seed,
+        chunk_size=chunk_size,
+        canonical_replicas=canonical_replicas,
+        aggregate_dir=aggregate_dir,
+        run_id=run_id,
+        fetch_parallelism=fetch_parallelism,
+        shuffle=False,
+        repeat=config.repeat,
+    )
+
+
+def _derive_zephon_config(
+    config: GrainDataLoader.Config,
+    *,
+    data_config: str | None,
+    sources: list[Mapping[str, Any]] | None,
+    text_field: str | None,
+    cache_dir: str | None,
+    seed: int | None,
+    chunk_size: int | None,
+    canonical_replicas: int | None,
+    aggregate_dir: str | None,
+    run_id: str | None,
+    fetch_parallelism: int | None,
+    shuffle: bool,
+    repeat: bool,
+) -> ZephonDataLoader.Config:
     deltas = {} if data_config is None else _load_data_config(data_config)
     if sources is not None:
         deltas["sources"] = _parse_sources(sources)
@@ -340,4 +418,6 @@ def zephon_dataloader(
     }.items():
         if value is not None:
             deltas[name] = value
+    deltas["shuffle"] = shuffle
+    deltas["repeat"] = repeat
     return derive(config, ZephonDataLoader.Config, **deltas)

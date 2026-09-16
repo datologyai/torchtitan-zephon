@@ -5,7 +5,8 @@
 # LICENSE file in the root directory of this source tree.
 
 import importlib
-from dataclasses import dataclass, field
+import sys
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
@@ -29,18 +30,29 @@ def _grain_config() -> GrainDataLoader.Config:
 
 class OverrideRoot(Configurable):
     @dataclass(kw_only=True, slots=True)
+    class ValidatorConfig(Configurable.Config):
+        dataloader: BaseDataLoader.Config = field(
+            default_factory=lambda: GrainDataLoader.Config(
+                dataset=DATASETS["c4_validation"],
+                repeat=False,
+            )
+        )
+
+    @dataclass(kw_only=True, slots=True)
     class Config(Configurable.Config):
         dataloader: BaseDataLoader.Config = field(default_factory=_grain_config)
-        validator_dataloader: BaseDataLoader.Config = field(
-            default_factory=_grain_config
+        validator: "OverrideRoot.ValidatorConfig" = field(
+            default_factory=lambda: OverrideRoot.ValidatorConfig()
         )
 
 
 @pytest.fixture(autouse=True)
 def clear_override_registry():
     clear_overrides()
+    sys.modules.pop("torchtitan.overrides.zephon_dataloader", None)
     yield
     clear_overrides()
+    sys.modules.pop("torchtitan.overrides.zephon_dataloader", None)
 
 
 def test_zephon_override_replaces_only_training_dataloader() -> None:
@@ -56,7 +68,29 @@ def test_zephon_override_replaces_only_training_dataloader() -> None:
 
     assert isinstance(config.dataloader, ZephonDataLoader.Config)
     assert [source.weight for source in config.dataloader.sources] == [1.0, 1.0]
-    assert not isinstance(config.validator_dataloader, ZephonDataLoader.Config)
+    assert not isinstance(config.validator.dataloader, ZephonDataLoader.Config)
+
+
+def test_zephon_overrides_replace_training_and_validation_dataloaders() -> None:
+    config = OverrideRoot.Config()
+    override_config = OverrideConfig(
+        imports=[
+            "torchtitan.overrides.zephon_dataloader.zephon_dataloader",
+            "torchtitan.overrides.zephon_dataloader.zephon_validation_dataloader",
+        ]
+    )
+
+    importlib.import_module("torchtitan.overrides.zephon_dataloader")
+    apply_overrides(override_config, config)
+
+    from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
+
+    assert isinstance(config.dataloader, ZephonDataLoader.Config)
+    assert config.dataloader.shuffle
+    assert config.dataloader.repeat
+    assert isinstance(config.validator.dataloader, ZephonDataLoader.Config)
+    assert not config.validator.dataloader.shuffle
+    assert not config.validator.dataloader.repeat
 
 
 def test_zephon_dataloader_validates_sources() -> None:
@@ -225,3 +259,43 @@ def test_zephon_dataloader_yields_torchtitan_batches_and_checkpoints() -> None:
                 assert torch.equal(actual[key], expected[key])
             else:
                 assert actual[key] == expected[key]
+
+
+def test_zephon_validation_dataloader_is_unshuffled_and_finite() -> None:
+    pytest.importorskip("zephon")
+
+    from torchtitan.overrides.zephon_dataloader import (
+        zephon_validation_dataloader,
+        ZephonDataLoader,
+    )
+
+    repo_root = Path(__file__).resolve().parents[2]
+    config = zephon_validation_dataloader(
+        GrainDataLoader.Config(
+            dataset=DATASETS["c4_validation"],
+            repeat=False,
+        ),
+        data_config=str(
+            repo_root / "examples" / "zephon" / "validation_local_jsonl.toml"
+        ),
+    )
+
+    assert not config.shuffle
+    assert not config.repeat
+    assert replace(config, repeat=True).repeat
+
+    loader = ZephonDataLoader(
+        config,
+        dp_world_size=1,
+        dp_rank=0,
+        tokenizer=HuggingFaceTokenizer(
+            HuggingFaceTokenizer.Config(),
+            tokenizer_path=str(repo_root / "tests" / "assets" / "tokenizer"),
+        ),
+        max_context_length=16,
+        num_tokens_per_batch=32,
+    )
+    batches = list(loader)
+
+    assert batches
+    assert len(batches) < 10
