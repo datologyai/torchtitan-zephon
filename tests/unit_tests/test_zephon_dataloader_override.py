@@ -355,26 +355,25 @@ def test_zephon_pretokenized_recipe_skips_tokenization_and_resumes() -> None:
 
     loader = build_loader()
     loader_iterator = iter(loader)
-    first_inputs, first_labels = next(loader_iterator)
-    assert torch.equal(first_labels, first_inputs["input"] + 1)
-    assert first_inputs["positions"].tolist() == list(range(16)) * 2
-    assert first_inputs["num_valid_tokens"] == 32
+    first_batch = next(loader_iterator)
+    assert torch.equal(first_batch["labels"], first_batch["input"] + 1)
+    assert first_batch["positions"].tolist() == list(range(16)) * 2
+    assert first_batch["num_valid_tokens"] == 32
 
     restored_loader = build_loader()
     restored_loader.load_state_dict(loader.state_dict())
     resumed = next(iter(restored_loader))
 
-    for (actual_inputs, actual_labels), (expected_inputs, expected_labels) in (
-        ((first_inputs, first_labels), first_reference),
+    for actual, expected in (
+        (first_batch, first_reference),
         (resumed, second_reference),
     ):
-        assert actual_inputs.keys() == expected_inputs.keys()
-        for key in actual_inputs:
-            if isinstance(actual_inputs[key], torch.Tensor):
-                assert torch.equal(actual_inputs[key], expected_inputs[key])
+        assert actual.keys() == expected.keys()
+        for key in actual:
+            if isinstance(actual[key], torch.Tensor):
+                assert torch.equal(actual[key], expected[key])
             else:
-                assert actual_inputs[key] == expected_inputs[key]
-        assert torch.equal(actual_labels, expected_labels)
+                assert actual[key] == expected[key]
 
 
 @pytest.mark.parametrize(

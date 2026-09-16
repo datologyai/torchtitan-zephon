@@ -38,12 +38,12 @@ def _find_free_local_port() -> int:
         return local_socket.getsockname()[1]
 
 
-def _batch_state(input_dict: dict[str, Any], labels: Any) -> dict[str, Any]:
+def _batch_state(batch: dict[str, Any]) -> dict[str, Any]:
     return {
-        "input": input_dict["input"].tolist(),
-        "positions": input_dict["positions"].tolist(),
-        "num_valid_tokens": input_dict["num_valid_tokens"],
-        "labels": labels.tolist(),
+        "input": batch["input"].tolist(),
+        "positions": batch["positions"].tolist(),
+        "num_valid_tokens": batch["num_valid_tokens"],
+        "labels": batch["labels"].tolist(),
     }
 
 
@@ -64,9 +64,7 @@ def _collect_global_steps(
     data_iter = iter(loader)
     global_steps: list[list[dict[str, Any]]] = []
     for _ in range(num_steps):
-        local_batches = [
-            _batch_state(*next(data_iter)) for _ in range(batches_per_rank)
-        ]
+        local_batches = [_batch_state(next(data_iter)) for _ in range(batches_per_rank)]
         gathered: list[list[dict[str, Any]] | None] = [None] * world_size
         dist.all_gather_object(gathered, local_batches)
         if rank == 0:
