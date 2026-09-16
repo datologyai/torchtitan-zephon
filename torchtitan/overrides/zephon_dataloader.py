@@ -213,6 +213,10 @@ class ZephonDataLoader(BaseDataLoader):
 
     @staticmethod
     def _validate_config(config: Config, dp_world_size: int) -> None:
+        if config.max_num_documents is not None:
+            raise ValueError(
+                "ZephonDataLoader does not yet support dataloader.max_num_documents"
+            )
         if not config.sources:
             raise ValueError("dataloader.sources must not be empty")
         source_names = [source.name for source in config.sources]
@@ -264,21 +268,22 @@ class ZephonDataLoader(BaseDataLoader):
 
     def __iter__(self) -> Iterator[TrainerBatch]:
         for sample_batch in self._pipeline:
-            training_batch = sample_batch.to_training(
+            converted_batch = sample_batch.to_training(
                 tokens_field=self._tokens_field,
                 return_labels=True,
                 dtype=torch.long,
                 ignore_index=IGNORE_INDEX,
                 rename_fields={"input_ids": "input"},
             )
-            labels = training_batch["labels"].squeeze(0)
-            input_dict = {
-                "input": training_batch["input"].squeeze(0),
+            labels = converted_batch["labels"].squeeze(0)
+            training_batch = {
+                "input": converted_batch["input"].squeeze(0),
+                "labels": labels,
                 "num_valid_tokens": int((labels != IGNORE_INDEX).sum()),
             }
-            if "positions" in training_batch:
-                input_dict["positions"] = training_batch["positions"].squeeze(0)
-            yield input_dict, labels
+            if "positions" in converted_batch:
+                training_batch["positions"] = converted_batch["positions"].squeeze(0)
+            yield training_batch
 
     def state_dict(self) -> dict[str, bytes]:
         """Store the complete Zephon checkpoint as one DCP-safe opaque value."""

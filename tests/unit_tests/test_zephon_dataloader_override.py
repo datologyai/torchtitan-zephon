@@ -15,10 +15,10 @@ from torchtitan.components.data.loader import BaseDataLoader, GrainDataLoader
 from torchtitan.components.loss import IGNORE_INDEX
 from torchtitan.components.tokenizer import HuggingFaceTokenizer
 from torchtitan.config import (
-    Configurable,
-    OverrideConfig,
     apply_overrides,
     clear_overrides,
+    Configurable,
+    OverrideConfig,
 )
 from torchtitan.hf_datasets.text_datasets import DATASETS
 
@@ -77,12 +77,17 @@ def test_zephon_dataloader_validates_sources() -> None:
             ZephonDataLoader.Config(cache_dir=""), dp_world_size=1
         )
 
+    with pytest.raises(ValueError, match="does not yet support.*max_num_documents"):
+        ZephonDataLoader._validate_config(
+            ZephonDataLoader.Config(max_num_documents=4), dp_world_size=1
+        )
+
 
 def test_zephon_override_parses_weighted_local_and_hf_sources() -> None:
     from torchtitan.overrides.zephon_dataloader import (
+        zephon_dataloader,
         ZephonDataLoader,
         ZephonSource,
-        zephon_dataloader,
     )
 
     config = zephon_dataloader(
@@ -168,8 +173,8 @@ def test_zephon_dataloader_yields_torchtitan_batches_and_checkpoints() -> None:
     pytest.importorskip("zephon")
 
     from torchtitan.overrides.zephon_dataloader import (
-        ZephonDataLoader,
         zephon_dataloader,
+        ZephonDataLoader,
     )
 
     repo_root = Path(__file__).resolve().parents[2]
@@ -198,14 +203,14 @@ def test_zephon_dataloader_yields_torchtitan_batches_and_checkpoints() -> None:
 
     loader = make_loader()
     loader_iter = iter(loader)
-    inputs, labels = next(loader_iter)
+    batch = next(loader_iter)
 
-    assert inputs["input"].shape == (32,)
-    assert labels.shape == (32,)
-    assert inputs["input"].dtype == torch.long
-    assert labels.dtype == torch.long
-    assert "positions" in inputs
-    assert inputs["num_valid_tokens"] == int((labels != IGNORE_INDEX).sum())
+    assert batch["input"].shape == (32,)
+    assert batch["labels"].shape == (32,)
+    assert batch["input"].dtype == torch.long
+    assert batch["labels"].dtype == torch.long
+    assert "positions" in batch
+    assert batch["num_valid_tokens"] == int((batch["labels"] != IGNORE_INDEX).sum())
 
     checkpoint = loader.state_dict()
     assert isinstance(checkpoint["zephon"], bytes)
@@ -215,8 +220,10 @@ def test_zephon_dataloader_yields_torchtitan_batches_and_checkpoints() -> None:
     restored_iter = iter(restored_loader)
     restored = [next(restored_iter) for _ in range(2)]
 
-    for (actual_inputs, actual_labels), (expected_inputs, expected_labels) in zip(
-        [(inputs, labels), *restored], baseline
-    ):
-        assert torch.equal(actual_inputs["input"], expected_inputs["input"])
-        assert torch.equal(actual_labels, expected_labels)
+    for actual, expected in zip([batch, *restored], baseline):
+        assert actual.keys() == expected.keys()
+        for key in actual:
+            if isinstance(actual[key], torch.Tensor):
+                assert torch.equal(actual[key], expected[key])
+            else:
+                assert actual[key] == expected[key]
