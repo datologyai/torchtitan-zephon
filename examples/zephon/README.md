@@ -45,16 +45,19 @@ checkpoint and JSON stream records for inspection.
 
 ## Training checkpoint smoke test
 
-On a Linux machine with one CUDA GPU, run a bounded TorchTitan training and
-resume through the real checkpoint coordinator:
+On a Linux machine with two CUDA GPUs, run the common bounded training and
+elastic-resume workflow through TorchTitan's real checkpoint coordinator:
 
 ```bash
 examples/zephon/run_training_smoke.sh ./outputs/zephon-training-smoke
 ```
 
-The first launch trains through step 2 and saves full checkpoints. The second
-launch restores the latest completed checkpoint and trains step 3 with a fresh
-Zephon loader. Use a new output path for each invocation.
+The first launch trains through step 2 on two GPUs and saves full model and
+dataloader checkpoints. The second launch restores the latest completed
+checkpoint on one GPU and trains step 3 with the same logical global batch.
+Use a new output path for each invocation. On a single-GPU development box,
+set `FIRST_PHASE_GPUS=1`; this tests the complete checkpoint/resume path but
+not the physical data-parallel resize.
 
 ## Pretokenized and prepacked records
 
