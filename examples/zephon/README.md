@@ -8,9 +8,9 @@ Zephon normalizes weights automatically.
 
 | Recipe | Purpose |
 | --- | --- |
-| `local_jsonl.toml` | Minimal 50/50 local JSONL smoke test. |
+| `local_jsonl.toml` | Common 3:1 prose/code local JSONL smoke test. |
 | `validation_local_jsonl.toml` | Separate deterministic validation source. |
-| `weighted_local_jsonl.toml` | Local 3:1 prose/code mixture. |
+| `weighted_local_jsonl.toml` | Additional explicit weighted-mixture example. |
 | `elastic_local_jsonl.toml` | Local 3:1 mixture with two canonical data lanes. |
 | `pretokenized_local_jsonl.toml` | Pretokenized, prepacked local records. |
 | `hf_squad.toml` | Public Hugging Face Hub source. |
@@ -22,6 +22,11 @@ paths, and mixture weights easy to review and adapt.
 
 TorchTitan supplies the tokenizer to Zephon, so these data recipes do not
 contain a tokenizer path.
+
+`local_jsonl.toml` and `elastic_local_jsonl.toml` intentionally use the same
+portable data settings and fixtures as the Megatron-Zephon reference
+integration. Framework-owned tokenizer, batch, and checkpoint settings stay
+outside these reusable recipes.
 
 ## Elastic resume demo
 

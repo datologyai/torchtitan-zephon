@@ -233,14 +233,14 @@ def test_zephon_override_loads_local_data_recipe() -> None:
         data_config=str(repo_root / "examples" / "zephon" / "local_jsonl.toml"),
     )
 
-    assert [(source.name, source.weight) for source in config.sources] == [
-        ("prose", 1.0),
-        ("code", 1.0),
+    assert [(source.name, source.fmt, source.weight) for source in config.sources] == [
+        ("prose", "jsonl", 3.0),
+        ("code", "jsonl", 1.0),
     ]
     assert config.sources[0].path == str(
         repo_root / "tests" / "assets" / "zephon_mixture" / "prose"
     )
-    assert config.chunk_size == 8
+    assert config.chunk_size == 4
 
 
 def test_zephon_override_loads_weighted_and_elastic_recipes() -> None:

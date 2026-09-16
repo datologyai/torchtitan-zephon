@@ -1,17 +1,18 @@
-# A minimal, reproducible two-source Zephon mixture.
+# The common two-source recipe shared by the Zephon reference integrations.
 # Relative paths are resolved from this recipe file.
 
 text_field = "text"
 seed = 42
-# The checked-in sources contain four samples each. Eight samples per work
-# chunk keeps the small smoke test from producing a warning for nearly every
-# batch; real datasets can use a much larger value.
-chunk_size = 8
+chunk_size = 4
 
 [[sources]]
 name = "prose"
 path = "../../tests/assets/zephon_mixture/prose"
+fmt = "jsonl"
+weight = 3.0
 
 [[sources]]
 name = "code"
 path = "../../tests/assets/zephon_mixture/code"
+fmt = "jsonl"
+weight = 1.0
