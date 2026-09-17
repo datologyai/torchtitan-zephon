@@ -1,109 +1,190 @@
-# Zephon data recipes
+# Zephon + TorchTitan
 
-These recipes are the only Zephon-specific input to the TorchTitan override.
-Each source has a stable `name`, a local directory or `hf://` URI, an optional
-`fmt`, and an optional positive `weight`. `fmt` maps directly to Zephon's
-`Dataset.from_path(..., fmt=...)`; omit it to use Zephon's format detection.
-Zephon normalizes weights automatically and treats them as token proportions.
-Its default `TokenEstimation()` calibrates online sources against the
-TorchTitan tokenizer; no recipe flag is needed.
+This example replaces TorchTitan's Grain training and validation dataloaders
+with Zephon while leaving model construction, tokenizer selection,
+optimization, distributed training, and checkpoint coordination in
+TorchTitan. It demonstrates token-aware source mixtures, deterministic
+checkpoint/resume, and an elastic resume at a different data-parallel degree.
 
-Recipes default to `training = true`, which enables shuffling and token
-estimation. The validation recipe sets `training = false` explicitly.
+The stock TorchTitan path is unchanged. Zephon is enabled through TorchTitan's
+opt-in configuration overrides.
 
-| Recipe | Purpose |
-| --- | --- |
-| `local_jsonl.toml` | Common 3:1 prose/code local JSONL smoke test. |
-| `validation_local_jsonl.toml` | Separate deterministic validation source. |
-| `elastic_local_jsonl.toml` | Local 3:1 mixture with two canonical data lanes. |
+## Prerequisites
 
-Use the recipe with the opt-in override described in
-[`docs/zephon.md`](../../docs/zephon.md). Keep real source definitions in a
-recipe rather than embedding them in a shell command; it makes their names,
-paths, and mixture weights easy to review and adapt.
+- Linux for GPU training; the data-only elastic demo also runs on macOS.
+- Python 3.11 or newer and `uv`.
+- A working TorchTitan environment with a PyTorch build compatible with the
+  installed NVIDIA driver. The full demonstration requires CUDA.
+- GitHub access to the private `datologyai/zephon` repository until Zephon has
+  a public distribution.
+- Two CUDA GPUs for the complete topology-change demonstration, or one CUDA GPU
+  for a checkpoint/resume smoke test without a physical DP resize.
 
-TorchTitan supplies the tokenizer to Zephon, so these data recipes do not
-contain a tokenizer path.
+## Install
 
-`local_jsonl.toml` and `elastic_local_jsonl.toml` intentionally use the same
-portable data settings and fixtures as the Megatron-Zephon reference
-integration. Framework-owned tokenizer, batch, and checkpoint settings stay
-outside these reusable recipes.
+Create the TorchTitan environment using the normal project instructions, then
+install the Zephon release pinned for this integration:
 
-## Elastic resume demo
+```bash
+uv pip install -r requirements-zephon.txt
+```
 
-Run the complete deterministic-resume demonstration on a CPU-only macOS or
-Linux machine:
+The pin resolves through the private Zephon GitHub repository and uses your
+normal Git credentials. To validate a local release candidate instead, set
+`ZEPHON_WHEEL=/path/to/zephon.whl` when running the clean-environment validation
+script. For active Zephon development, install a sibling checkout with
+`uv pip install -e /path/to/zephon`.
+
+## Quick verification: CPU elastic demo
+
+The fastest end-to-end check exercises the real Zephon pipeline and checkpoint
+state without training a model:
 
 ```bash
 uv run --no-sync python examples/zephon/elastic_resume_demo.py
 ```
 
-The command creates an uninterrupted two-worker reference stream, checkpoints
-the same stream after two steps, resumes it with one worker, and compares the
-global token batches by fingerprint. Lane-to-worker assignment may reorder
-batches within a global step after the topology change, so that comparison is
-order-independent within each step. It exits unsuccessfully if any token or
-other trainer-batch field differs. Pass `--work-dir PATH` to keep each run's
-checkpoint and JSON stream records for inspection.
+The demo creates an uninterrupted two-worker reference stream, checkpoints a
+second stream after two global steps, resumes it with one worker, and compares
+every TorchTitan trainer-batch field. Lane-to-worker assignment may reorder
+batches after the topology change, so comparison is order-independent within
+each global step. A mismatch exits nonzero.
 
-## Training checkpoint smoke test
+Pass `--work-dir PATH` to retain the checkpoint and raw JSON stream records for
+diagnosis.
 
-On a Linux machine with two CUDA GPUs, run the common bounded training and
-elastic-resume workflow through TorchTitan's real checkpoint coordinator:
+## Run the full GPU demo
+
+On a Linux machine with two CUDA GPUs, run:
 
 ```bash
 examples/zephon/run_training_smoke.sh ./outputs/zephon-training-smoke
 ```
 
-The first launch trains through step 2 on two GPUs and saves full model and
-dataloader checkpoints. The second launch restores the latest completed
-checkpoint on one GPU and trains step 3 with the same logical global batch.
-Use a new output path for each invocation. On a single-GPU development box,
-set `FIRST_PHASE_GPUS=1`; this tests the complete checkpoint/resume path but
-not the physical data-parallel resize.
+Use a new output path for every invocation. After initial compilation and
+tokenizer setup, this bounded debug-model run should complete in a few minutes
+on a typical development GPU. The script runs two phases:
 
-## Elastic TorchTitan launch
+1. Train through step 2 on two GPUs and save TorchTitan model and Zephon
+   dataloader checkpoints.
+2. Restore the latest completed checkpoint on one GPU and train step 3 with the
+   same canonical lanes and logical global batch.
 
-The elastic recipe fixes the data stream at two canonical lanes. On one host
-with two GPUs, provide a shared aggregate directory and stable run ID:
+The final line is:
 
-```bash
-CUDA_VISIBLE_DEVICES=0,1 NGPU=2 MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh \
-  --override.imports \
-  'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"examples/zephon/elastic_local_jsonl.toml","aggregate_dir":"/mnt/zephon-aggregate","run_id":"local-elastic-demo"}' \
-  'torchtitan.overrides.zephon_dataloader.zephon_validation_dataloader={"data_config":"examples/zephon/validation_local_jsonl.toml"}' \
-  --training.steps 4 \
-  --training.max_context_length 128 \
-  --training.num_tokens_per_microbatch_per_dp_rank 256 \
-  --training.num_tokens_per_train_step 512 \
-  --checkpoint.enable \
-  --checkpoint.interval 2 \
-  --dump_folder ./outputs/zephon-elastic
+```text
+Zephon training checkpoint/resume smoke test passed: ./outputs/zephon-training-smoke
 ```
 
-Keep the recipe, canonical lane count, aggregate directory, run ID, and train
-step token budget unchanged when resuming with a different GPU count.
-
-After the two-GPU run completes step 4, resume its latest completed checkpoint
-with one GPU:
+Checkpoints, logs, and Zephon aggregation state are written beneath the output
+path. On a single-GPU development box, run:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 NGPU=1 MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh \
-  --override.imports \
-  'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"examples/zephon/elastic_local_jsonl.toml","aggregate_dir":"/mnt/zephon-aggregate","run_id":"local-elastic-demo"}' \
-  'torchtitan.overrides.zephon_dataloader.zephon_validation_dataloader={"data_config":"examples/zephon/validation_local_jsonl.toml"}' \
-  --training.steps 6 \
-  --training.max_context_length 128 \
-  --training.num_tokens_per_microbatch_per_dp_rank 256 \
-  --training.num_tokens_per_train_step 512 \
-  --checkpoint.enable \
-  --checkpoint.interval 2 \
-  --dump_folder ./outputs/zephon-elastic
+FIRST_PHASE_GPUS=1 \
+  examples/zephon/run_training_smoke.sh ./outputs/zephon-training-smoke-1gpu
 ```
 
-The per-rank microbatch is still 256 tokens, while each train step still
-consumes 512 tokens globally. TorchTitan therefore accumulates two
-microbatches on the single GPU. Resume only from a completed checkpoint and do
-not change the recipe, canonical lane count, aggregate directory, run ID,
-token budgets, tokenizer, or seed.
+That exercises model and dataloader checkpoint/resume but does not demonstrate
+a physical data-parallel resize.
+
+## What the demo does
+
+1. Loads two raw-text JSONL sources from the checked-in TOML recipe.
+2. Passes the configured 3:1 weights to Zephon as token proportions.
+3. Uses bare `TokenEstimation()` to calibrate online source allocation.
+4. Tokenizes with TorchTitan's tokenizer, splits long records, and packs
+   fixed-length sequences online.
+5. Converts each Zephon batch into TorchTitan's flattened `TrainerBatch`.
+6. Saves Zephon stream state inside the corresponding completed TorchTitan
+   checkpoint.
+7. Restores the logical stream after changing the physical worker count.
+
+For the exact pipeline and checkpoint contract, see the
+[integration reference](../../docs/zephon.md).
+
+## Use your own data
+
+Copy `local_jsonl.toml` and replace its sources:
+
+```toml
+text_field = "text"
+cache_dir = "/local-ssd/zephon"
+seed = 42
+chunk_size = 4
+
+[[sources]]
+name = "web"
+path = "s3://example-bucket/web"
+fmt = "parquet"
+weight = 3.0
+
+[[sources]]
+name = "code"
+path = "hf://organization/code/train"
+weight = 1.0
+```
+
+Relative local paths are resolved from the recipe directory. `fmt` maps
+directly to `Dataset.from_path(..., fmt=...)`; omit it to use Zephon's format
+detection. `cache_dir` applies Zephon's file cache to every source, including
+remote paths that do not use `hf://`.
+
+Weights are relative token proportions: `3.0` and `1.0` request a 75/25 token
+mixture. The integration passes them unchanged to `MixtureSpec`; Zephon
+normalizes them. Training always uses bare `TokenEstimation()`. There are no
+estimator tuning knobs in the recipe and no post-tokenization
+`ensure_mixture()` operation.
+
+TorchTitan supplies the tokenizer, context length, and batch size, so those
+settings remain in TorchTitan's configuration. Set `training = false` only for
+a finite, unshuffled validation recipe without token estimation.
+
+For elastic training, start from `elastic_local_jsonl.toml`. Keep the recipe,
+canonical replica count, aggregate directory, run ID, tokenizer, context
+length, seed, and logical global batch unchanged across the resume. The
+physical data-parallel degree may change.
+
+The local and elastic recipes use the same portable settings and eight-record
+prose and code fixtures as the Megatron-LM-Zephon reference integration. The
+validation recipe uses the prose fixture as a separate finite source.
+
+## Advanced: manual launch
+
+The smoke script is the canonical complete launch. To adapt an existing
+TorchTitan command, enable the training override with:
+
+```text
+--override.imports 'torchtitan.overrides.zephon_dataloader.zephon_dataloader={"data_config":"/path/to/recipe.toml"}'
+```
+
+Enable Zephon validation with a separate recipe:
+
+```text
+--override.imports 'torchtitan.overrides.zephon_dataloader.zephon_validation_dataloader={"data_config":"/path/to/validation.toml"}'
+```
+
+Elastic launches also require stable `canonical_replicas`, `aggregate_dir`,
+and `run_id` override values. All model, optimizer, batch, tokenizer,
+distributed, checkpoint, and output settings remain normal TorchTitan
+configuration. Resume only from a completed checkpoint.
+
+## Next steps
+
+Read the [integration reference](../../docs/zephon.md) for the supported recipe
+fields, framework adapter, and checkpoint contract.
+
+Run the focused adapter tests:
+
+```bash
+uv run --no-sync pytest -q tests/unit_tests/test_zephon_dataloader_override.py
+```
+
+Validate the pinned private release in a fresh temporary environment:
+
+```bash
+scripts/validate_zephon_install.sh
+```
+
+The initial reference integration supports online raw text only. It does not
+support a separate pretokenized/prepacked path, arbitrary Zephon options, or
+TorchTitan's `dataloader.max_num_documents` setting.
