@@ -51,7 +51,6 @@ cannot accidentally become evaluation data.
 Zephon-specific configuration lives in a TOML recipe:
 
 ```toml
-input_mode = "online"
 text_field = "text"
 cache_dir = "/local-ssd/zephon"
 seed = 42
@@ -73,30 +72,22 @@ Each source has a stable name and path. `fmt` maps directly to
 Weights are relative token proportions and Zephon normalizes them, so `3.0`
 and `1.0` request a 75/25 token mixture. Token-aware allocation is enabled by
 default: Zephon calibrates each online source against TorchTitan's tokenizer,
-schedules fewer records from sources with longer documents, and then uses
-`ensure_mixture` after tokenization to smooth the remaining token-level drift.
-The calibrated ratios are checkpointed and reused on resume.
+schedules fewer records from sources with longer documents, and checkpoints
+the calibrated ratios for reuse on resume.
 
 The integration deliberately uses Zephon's `TokenEstimation()` defaults rather
 than adding recipe knobs for calibration internals. `cache_dir` enables
 Zephon's file cache for all sources, not only `hf://` paths.
 
-The [example catalog](../examples/zephon/README.md) includes equal-weight,
-weighted, Hugging Face, elastic, and pretokenized recipes. Zephon reads Hugging
-Face Parquet shards directly; the pinned `hf` extra supplies the needed support.
+The [example catalog](../examples/zephon/README.md) includes local, weighted,
+Hugging Face, and elastic recipes. Zephon reads Hugging Face Parquet shards
+directly; the pinned `hf` extra supplies the needed support.
 
-## Choose the input contract
-
-`input_mode = "online"` expects a text field. Zephon tokenizes with the
-TorchTitan tokenizer, splits long samples, adds BOS/EOS boundaries, and packs
-the result into complete training sequences.
-
-`input_mode = "pretokenized"` skips tokenization and packing. Every record must
-contain one `input_ids` sequence whose length is the configured per-rank
-microbatch token budget plus one. Optional `positions` must have the same
-length. The extra token becomes the final label, leaving exactly the requested
-number of trainer input tokens. Token estimation measures `input_ids` length
-directly in this mode.
+Zephon tokenizes each source's text field with the TorchTitan tokenizer, splits
+long samples, adds BOS/EOS boundaries, and packs the result into complete
+training sequences. It batches those sequences at TorchTitan's configured
+local batch size; the framework adapter flattens that batch only when producing
+TorchTitan's trainer-batch structure.
 
 ## Checkpoint and elastic resume contract
 
@@ -123,8 +114,10 @@ uv run --no-sync python examples/zephon/elastic_resume_demo.py
 ```
 
 It builds an uninterrupted two-worker reference, checkpoints after two steps,
-resumes with one worker, and compares every TorchTitan trainer-batch field. A
-mismatch exits nonzero.
+resumes with one worker, and compares every TorchTitan trainer-batch field in
+each global step. Lane-to-worker assignment may reorder those batches after a
+topology change, so the comparison is order-independent within a global step.
+A mismatch exits nonzero.
 
 Run the real TorchTitan checkpoint coordinator on one CUDA GPU:
 
@@ -149,7 +142,7 @@ pinned release rather than a sibling checkout, and runs the release-facing
 tests. Set `ZEPHON_WHEEL=/path/to/zephon.whl` to validate a local release wheel.
 
 This example intentionally does not forward arbitrary Zephon options or
-promise a general pretokenized schema.
+support a separate pretokenized/prepacked input path.
 `dataloader.max_num_documents` is not yet supported by Zephon; setting it fails
 configuration validation instead of being ignored. The explicit choices and
 temporary constraints are recorded in the

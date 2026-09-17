@@ -10,9 +10,9 @@
 
 The overrides replace TorchTitan's training and validation ``GrainDataLoader``
 instances with Zephon pipelines. They deliberately keep the integration small:
-named data sources, deterministic mixtures, online or pretokenized input, and
-Zephon checkpoint state. Production-specific features belong in an integration
-package, not in this illustrative override.
+named data sources, deterministic mixtures, online tokenization and packing,
+and Zephon checkpoint state. Production-specific features belong in an
+integration package, not in this illustrative override.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from math import isfinite
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import torch
 import torch.distributed as dist
@@ -72,15 +72,6 @@ def _parse_sources(sources: Sequence[Mapping[str, Any]]) -> list[ZephonSource]:
     return parsed_sources
 
 
-def _pretokenized_token_count(payload: Any) -> int:
-    if not isinstance(payload, Mapping):
-        return 0
-    tokens = payload.get("input_ids")
-    if not isinstance(tokens, Sequence) or isinstance(tokens, (str, bytes)):
-        return 0
-    return len(tokens)
-
-
 def _resolve_recipe_path(path: str, recipe_dir: Path) -> str:
     if "://" in path or Path(path).is_absolute():
         return path
@@ -94,7 +85,6 @@ def _load_data_config(data_config: str) -> dict[str, Any]:
 
     allowed_keys = {
         "sources",
-        "input_mode",
         "text_field",
         "cache_dir",
         "seed",
@@ -153,9 +143,6 @@ class ZephonDataLoader(BaseDataLoader):
         sources: list[ZephonSource] = field(default_factory=_demo_sources)
         """Named local paths or ``hf://`` URIs with optional mixture weights."""
 
-        input_mode: Literal["online", "pretokenized"] = "online"
-        """Whether records contain text or one already-packed token sequence."""
-
         text_field: str = "text"
         """Name of the text column shared by all configured sources."""
 
@@ -201,6 +188,11 @@ class ZephonDataLoader(BaseDataLoader):
             TokenEstimation,
         ) = _require_zephon()
         self._validate_config(config, dp_world_size)
+        if num_tokens_per_batch % max_context_length:
+            raise ValueError(
+                "num_tokens_per_batch must be divisible by max_context_length"
+            )
+        local_batch_size = num_tokens_per_batch // max_context_length
 
         datasets = [
             Dataset.from_path(name=source.name, path=source.path, fmt=source.fmt)
@@ -215,10 +207,9 @@ class ZephonDataLoader(BaseDataLoader):
             "seed": config.seed,
             "shuffle_shards": config.shuffle,
             "shuffle_within_shard": config.shuffle,
-            "token_estimation": self._build_token_estimation(
-                config.input_mode, TokenEstimation
-            ),
         }
+        if config.shuffle:
+            work_source_options["token_estimation"] = TokenEstimation()
         if config.repeat:
             work_source_options["exhausted_policy"] = "repeat"
         work_source = StaticMixtureWorkSource(**work_source_options)
@@ -227,46 +218,31 @@ class ZephonDataLoader(BaseDataLoader):
         if config.fetch_parallelism is not None:
             pipeline = pipeline.fetch_parallelism(config.fetch_parallelism)
 
-        if config.input_mode == "online":
-            tokenizer_path = getattr(tokenizer, "tokenizer_path", None)
-            if not isinstance(tokenizer_path, str) or not tokenizer_path:
-                raise ValueError(
-                    "Online Zephon input requires a tokenizer with a tokenizer_path"
-                )
-            pipeline = pipeline.tokenize(
-                tokenizer_id=tokenizer_path,
-                field=config.text_field,
-                add_attention_mask=False,
-                max_length=max_context_length + 1,
-                split_long_samples=True,
-                special_tokens="bos_eos",
-            )
-        if config.input_mode == "online":
-            pipeline = pipeline.ensure_mixture().pack_flat(
-                max_length=num_tokens_per_batch + 1,
-                algorithm="wrap",
-                emit_positions=True,
-            )
-            pipeline.preflight_tokenizers()
+        tokenizer_path = getattr(tokenizer, "tokenizer_path", None)
+        if not isinstance(tokenizer_path, str) or not tokenizer_path:
+            raise ValueError("Zephon input requires a tokenizer with a tokenizer_path")
+        pipeline = pipeline.tokenize(
+            tokenizer_id=tokenizer_path,
+            field=config.text_field,
+            add_attention_mask=False,
+            max_length=max_context_length + 1,
+            split_long_samples=True,
+            special_tokens="bos_eos",
+        )
+        pipeline = pipeline.pack_flat(
+            max_length=max_context_length + 1,
+            algorithm="wrap",
+            emit_positions=True,
+        )
+        pipeline.preflight_tokenizers()
 
-        self._pipeline = pipeline.batch(1, drop_last=True).options(
+        self._pipeline = pipeline.batch(local_batch_size, drop_last=True).options(
             **self._runtime_options(config, dp_world_size, dp_rank)
         )
         self._tokens_field = "input_ids"
-        self._pretokenized_record_length = (
-            num_tokens_per_batch + 1 if config.input_mode == "pretokenized" else None
-        )
-
-    @staticmethod
-    def _build_token_estimation(input_mode: str, token_estimation_cls: Any) -> Any:
-        if input_mode == "pretokenized":
-            return token_estimation_cls(measure=_pretokenized_token_count)
-        return token_estimation_cls()
 
     @staticmethod
     def _validate_config(config: Config, dp_world_size: int) -> None:
-        if config.input_mode not in ("online", "pretokenized"):
-            raise ValueError("dataloader.input_mode must be 'online' or 'pretokenized'")
         if not config.sources:
             raise ValueError("dataloader.sources must not be empty")
         source_names = [source.name for source in config.sources]
@@ -283,8 +259,8 @@ class ZephonDataLoader(BaseDataLoader):
             for source in config.sources
         ):
             raise ValueError("dataloader.sources weights must all be positive")
-        if config.input_mode == "online" and not config.text_field:
-            raise ValueError("dataloader.text_field must not be empty in online mode")
+        if not config.text_field:
+            raise ValueError("dataloader.text_field must not be empty")
         if config.cache_dir is not None and not config.cache_dir:
             raise ValueError("dataloader.cache_dir must not be empty when set")
         if config.chunk_size <= 0:
@@ -345,10 +321,6 @@ class ZephonDataLoader(BaseDataLoader):
 
     def __iter__(self) -> Iterator[TrainerBatch]:
         for sample_batch in self._pipeline:
-            if self._pretokenized_record_length is not None:
-                self._validate_pretokenized_batch(
-                    sample_batch, self._pretokenized_record_length
-                )
             converted_batch = sample_batch.to_training(
                 tokens_field=self._tokens_field,
                 return_labels=True,
@@ -356,54 +328,15 @@ class ZephonDataLoader(BaseDataLoader):
                 ignore_index=IGNORE_INDEX,
                 rename_fields={"input_ids": "input"},
             )
-            labels = converted_batch["labels"].squeeze(0)
+            labels = converted_batch["labels"].reshape(-1)
             training_batch = {
-                "input": converted_batch["input"].squeeze(0),
+                "input": converted_batch["input"].reshape(-1),
                 "labels": labels,
                 "num_valid_tokens": int((labels != IGNORE_INDEX).sum()),
             }
             if "positions" in converted_batch:
-                training_batch["positions"] = converted_batch["positions"].squeeze(0)
+                training_batch["positions"] = converted_batch["positions"].reshape(-1)
             yield training_batch
-
-    def _validate_pretokenized_batch(
-        self, sample_batch: Any, expected_length: int
-    ) -> None:
-        payload = sample_batch.records[0].payload
-        if not isinstance(payload, Mapping):
-            raise ValueError(  # noqa: TRY004
-                "Pretokenized Zephon records must be mappings"
-            )
-        if self._tokens_field not in payload:
-            raise ValueError(
-                f"Pretokenized Zephon records require '{self._tokens_field}'"
-            )
-        tokens = payload[self._tokens_field]
-        try:
-            actual_length = len(tokens)
-        except TypeError as exc:
-            raise ValueError(
-                f"Pretokenized field '{self._tokens_field}' must be a sequence"
-            ) from exc
-        if actual_length != expected_length:
-            raise ValueError(
-                f"Pretokenized field '{self._tokens_field}' must contain "
-                f"num_tokens_per_batch + 1 = {expected_length} values; got "
-                f"{actual_length}"
-            )
-        positions = payload.get("positions")
-        if positions is not None:
-            try:
-                positions_length = len(positions)
-            except TypeError as exc:
-                raise ValueError(
-                    "Pretokenized field 'positions' must be a sequence"
-                ) from exc
-            if positions_length != expected_length:
-                raise ValueError(
-                    "Pretokenized field 'positions' must have the same length as "
-                    f"'{self._tokens_field}'"
-                )
 
     def state_dict(self) -> dict[str, bytes]:
         """Store the complete Zephon checkpoint as one DCP-safe opaque value."""
@@ -433,7 +366,6 @@ def zephon_dataloader(
     *,
     data_config: str | None = None,
     sources: list[Mapping[str, Any]] | None = None,
-    input_mode: Literal["online", "pretokenized"] | None = None,
     text_field: str | None = None,
     cache_dir: str | None = None,
     seed: int | None = None,
@@ -448,7 +380,6 @@ def zephon_dataloader(
         config,
         data_config=data_config,
         sources=sources,
-        input_mode=input_mode,
         text_field=text_field,
         cache_dir=cache_dir,
         seed=seed,
@@ -473,7 +404,6 @@ def zephon_validation_dataloader(
     *,
     data_config: str | None = None,
     sources: list[Mapping[str, Any]] | None = None,
-    input_mode: Literal["online", "pretokenized"] | None = None,
     text_field: str | None = None,
     cache_dir: str | None = None,
     seed: int | None = None,
@@ -488,7 +418,6 @@ def zephon_validation_dataloader(
         config,
         data_config=data_config,
         sources=sources,
-        input_mode=input_mode,
         text_field=text_field,
         cache_dir=cache_dir,
         seed=seed,
@@ -507,7 +436,6 @@ def _derive_zephon_config(
     *,
     data_config: str | None,
     sources: list[Mapping[str, Any]] | None,
-    input_mode: Literal["online", "pretokenized"] | None,
     text_field: str | None,
     cache_dir: str | None,
     seed: int | None,
@@ -525,7 +453,6 @@ def _derive_zephon_config(
     elif "sources" not in deltas:
         deltas["sources"] = _demo_sources()
     for name, value in {
-        "input_mode": input_mode,
         "text_field": text_field,
         "cache_dir": cache_dir,
         "seed": seed,

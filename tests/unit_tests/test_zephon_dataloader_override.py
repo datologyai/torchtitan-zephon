@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import hashlib
 import importlib
 import sys
 from dataclasses import dataclass, field, replace
@@ -151,7 +152,6 @@ def test_zephon_dataloader_validates_distributed_configuration() -> None:
 @pytest.mark.parametrize(
     ("config_values", "message"),
     [
-        ({"input_mode": "unsupported"}, "input_mode"),
         ({"text_field": ""}, "text_field"),
         ({"chunk_size": 0}, "chunk_size"),
         ({"fetch_parallelism": 0}, "fetch_parallelism"),
@@ -240,7 +240,30 @@ def test_zephon_override_loads_local_data_recipe() -> None:
     assert config.sources[0].path == str(
         repo_root / "tests" / "assets" / "zephon_mixture" / "prose"
     )
-    assert config.chunk_size == 2
+    assert config.chunk_size == 4
+
+
+def test_zephon_shared_artifact_hashes() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    expected_hashes = {
+        Path("tests/assets/zephon_mixture/prose/data.jsonl"): (
+            "849b787063a051d8e4247b9006d7f16a4f4824692b2d14fae846b8ac7a0fbc1e"
+        ),
+        Path("tests/assets/zephon_mixture/code/data.jsonl"): (
+            "c81b60a1d641b40db0226112ea89e1bdaff42c6efb393e632bfe44c6f5d1b42a"
+        ),
+        Path("examples/zephon/local_jsonl.toml"): (
+            "18f7f2aeb2960a3f2a8527dcafb795a6eabdf8cd488510fd85ad558767beac98"
+        ),
+        Path("examples/zephon/elastic_local_jsonl.toml"): (
+            "17e7657a445598b5434a459848c4d8de0370814397cbc575e43717dd90d76ed9"
+        ),
+    }
+
+    for path, expected_hash in expected_hashes.items():
+        assert (
+            hashlib.sha256((repo_root / path).read_bytes()).hexdigest() == expected_hash
+        )
 
 
 def test_zephon_override_loads_weighted_and_elastic_recipes() -> None:
@@ -323,94 +346,126 @@ sources = []
         zephon_dataloader(_grain_config(), data_config=str(recipe))
 
 
-def test_zephon_pretokenized_recipe_skips_tokenization_and_resumes() -> None:
-    pytest.importorskip("zephon")
+def test_zephon_training_and_validation_pipeline_contract(monkeypatch) -> None:
+    module = importlib.import_module("torchtitan.overrides.zephon_dataloader")
+    work_source_options = []
 
-    from torchtitan.overrides.zephon_dataloader import (
-        zephon_dataloader,
-        ZephonDataLoader,
-    )
+    class FakeDataset:
+        @staticmethod
+        def from_path(**options):
+            return options
 
-    repo_root = Path(__file__).resolve().parents[2]
-    config = zephon_dataloader(
-        _grain_config(),
-        data_config=str(
-            repo_root / "examples" / "zephon" / "pretokenized_local_jsonl.toml"
+    class FakeMixtureSpec:
+        __slots__ = ("weights",)
+
+        def __init__(self, weights):
+            self.weights = weights
+
+    class FakeTokenEstimation:
+        pass
+
+    class FakeWorkSource:
+        def __init__(self, **options):
+            work_source_options.append(options)
+
+    class FakePipeline:
+        def __init__(self, _work_source):
+            self.calls = []
+
+        def fetch_parallelism(self, value):
+            self.calls.append(("fetch_parallelism", (value,), {}))
+            return self
+
+        def tokenize(self, **options):
+            self.calls.append(("tokenize", (), options))
+            return self
+
+        def pack_flat(self, **options):
+            self.calls.append(("pack_flat", (), options))
+            return self
+
+        def preflight_tokenizers(self):
+            self.calls.append(("preflight_tokenizers", (), {}))
+
+        def batch(self, value, **options):
+            self.calls.append(("batch", (value,), options))
+            return self
+
+        def options(self, **options):
+            self.calls.append(("options", (), options))
+            return self
+
+    monkeypatch.setattr(
+        module,
+        "_require_zephon",
+        lambda: (
+            FakePipeline,
+            FakeDataset,
+            FakeMixtureSpec,
+            FakeWorkSource,
+            FakeTokenEstimation,
         ),
     )
+    sources = [
+        module.ZephonSource(name="prose", path="/prose", weight=3.0),
+        module.ZephonSource(name="code", path="/code", weight=1.0),
+    ]
 
-    def build_loader() -> ZephonDataLoader:
-        return ZephonDataLoader(
-            config,
-            dp_world_size=1,
-            dp_rank=0,
-            tokenizer=SimpleNamespace(),
-            max_context_length=16,
-            num_tokens_per_batch=32,
-        )
-
-    reference_iterator = iter(build_loader())
-    first_reference = next(reference_iterator)
-    second_reference = next(reference_iterator)
-
-    loader = build_loader()
-    assert loader._pipeline.ws.requires_token_priming
-    loader_iterator = iter(loader)
-    first_batch = next(loader_iterator)
-    assert not loader._pipeline.ws.requires_token_priming
-    assert torch.equal(first_batch["labels"], first_batch["input"] + 1)
-    assert first_batch["positions"].tolist() == list(range(16)) * 2
-    assert first_batch["num_valid_tokens"] == 32
-
-    restored_loader = build_loader()
-    restored_loader.load_state_dict(loader.state_dict())
-    resumed = next(iter(restored_loader))
-
-    for actual, expected in (
-        (first_batch, first_reference),
-        (resumed, second_reference),
-    ):
-        assert actual.keys() == expected.keys()
-        for key in actual:
-            if isinstance(actual[key], torch.Tensor):
-                assert torch.equal(actual[key], expected[key])
-            else:
-                assert actual[key] == expected[key]
-
-
-@pytest.mark.filterwarnings("ignore:\\[zephon\\] token-aware mixture priming fell back")
-@pytest.mark.parametrize(
-    ("record", "message"),
-    [
-        ('{"text":"not tokenized"}\n', "require 'input_ids'"),
-        ('{"input_ids":[1,2]}\n', "num_tokens_per_batch \\+ 1 = 33"),
-    ],
-)
-def test_zephon_pretokenized_records_require_complete_token_batches(
-    tmp_path: Path, record: str, message: str
-) -> None:
-    pytest.importorskip("zephon")
-
-    from torchtitan.overrides.zephon_dataloader import ZephonDataLoader, ZephonSource
-
-    source_dir = tmp_path / "missing_tokens"
-    source_dir.mkdir()
-    (source_dir / "data.jsonl").write_text(record * 2)
-    loader = ZephonDataLoader(
-        ZephonDataLoader.Config(
-            sources=[ZephonSource(name="invalid", path=str(source_dir))],
-            input_mode="pretokenized",
-            chunk_size=1,
+    training_loader = module.ZephonDataLoader(
+        module.ZephonDataLoader.Config(
+            sources=sources,
+            chunk_size=4,
+            fetch_parallelism=3,
         ),
         dp_world_size=1,
         dp_rank=0,
-        tokenizer=SimpleNamespace(),
+        tokenizer=SimpleNamespace(tokenizer_path="tokenizer"),
         max_context_length=16,
         num_tokens_per_batch=32,
     )
+    training_options = work_source_options[0]
+    assert training_options["mixture"].weights == {"prose": 3.0, "code": 1.0}
+    assert training_options["chunk_size"] == 4
+    assert isinstance(training_options["token_estimation"], FakeTokenEstimation)
+    assert training_loader._pipeline.calls[:-1] == [
+        ("fetch_parallelism", (3,), {}),
+        (
+            "tokenize",
+            (),
+            {
+                "tokenizer_id": "tokenizer",
+                "field": "text",
+                "add_attention_mask": False,
+                "max_length": 17,
+                "split_long_samples": True,
+                "special_tokens": "bos_eos",
+            },
+        ),
+        (
+            "pack_flat",
+            (),
+            {"max_length": 17, "algorithm": "wrap", "emit_positions": True},
+        ),
+        ("preflight_tokenizers", (), {}),
+        ("batch", (2,), {"drop_last": True}),
+    ]
 
-    with pytest.raises(ValueError, match=message):
-        next(iter(loader))
+    module.ZephonDataLoader(
+        module.ZephonDataLoader.Config(
+            sources=sources,
+            chunk_size=4,
+            shuffle=False,
+            repeat=False,
+        ),
+        dp_world_size=1,
+        dp_rank=0,
+        tokenizer=SimpleNamespace(tokenizer_path="tokenizer"),
+        max_context_length=16,
+        num_tokens_per_batch=32,
+    )
+    validation_options = work_source_options[1]
+    assert "token_estimation" not in validation_options
+    assert "exhausted_policy" not in validation_options
 
 
 def test_zephon_dataloader_yields_torchtitan_batches_and_checkpoints() -> None:
@@ -453,6 +508,7 @@ def test_zephon_dataloader_yields_torchtitan_batches_and_checkpoints() -> None:
 
     assert batch["input"].shape == (32,)
     assert batch["labels"].shape == (32,)
+    assert batch["positions"].shape == (32,)
     assert batch["input"].dtype == torch.long
     assert batch["labels"].dtype == torch.long
     assert "positions" in batch
@@ -515,6 +571,7 @@ def test_zephon_validation_dataloader_is_unshuffled_and_finite() -> None:
         max_context_length=16,
         num_tokens_per_batch=32,
     )
+    assert not loader._pipeline.ws.requires_token_priming
     batches = list(loader)
 
     assert batches

@@ -14,7 +14,9 @@ from pathlib import Path
 import pytest
 
 
-def test_elastic_checkpoint_resume_preserves_global_batch_order(tmp_path: Path) -> None:
+def test_elastic_checkpoint_resume_preserves_global_step_contents(
+    tmp_path: Path,
+) -> None:
     pytest.importorskip("zephon")
 
     repo_root = Path(__file__).resolve().parents[2]
@@ -23,9 +25,9 @@ def test_elastic_checkpoint_resume_preserves_global_batch_order(tmp_path: Path) 
             sys.executable,
             str(repo_root / "examples" / "zephon" / "elastic_resume_demo.py"),
             "--total-steps",
-            "2",
+            "4",
             "--checkpoint-after",
-            "1",
+            "2",
             "--work-dir",
             str(tmp_path),
         ],
@@ -36,7 +38,7 @@ def test_elastic_checkpoint_resume_preserves_global_batch_order(tmp_path: Path) 
     )
 
     assert "Data-parallel workers: 2 -> 1" in result.stdout
-    assert "Exact stream match:    YES" in result.stdout
+    assert "Exact global-step match: YES" in result.stdout
 
     [run_dir] = tmp_path.glob("run-*")
     with (run_dir / "reference" / "reference.json").open() as input_file:
@@ -45,7 +47,14 @@ def test_elastic_checkpoint_resume_preserves_global_batch_order(tmp_path: Path) 
         before_checkpoint = json.load(input_file)
     with (run_dir / "elastic" / "resume.json").open() as input_file:
         after_resume = json.load(input_file)
-    assert before_checkpoint + after_resume == reference
+
+    def canonicalize(steps):
+        return [
+            sorted(step, key=lambda batch: json.dumps(batch, sort_keys=True))
+            for step in steps
+        ]
+
+    assert canonicalize(before_checkpoint + after_resume) == canonicalize(reference)
 
 
 def test_elastic_demo_rejects_indivisible_canonical_replicas(

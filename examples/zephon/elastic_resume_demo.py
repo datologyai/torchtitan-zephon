@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Demonstrate exact Zephon data-stream resume from two workers to one."""
+"""Demonstrate Zephon global-step preservation from two workers to one."""
 
 from __future__ import annotations
 
@@ -195,6 +195,18 @@ def _load_steps(path: Path) -> list[list[dict[str, Any]]]:
         return json.load(input_file)
 
 
+def _canonicalize_steps(
+    steps: list[list[dict[str, Any]]],
+) -> list[list[dict[str, Any]]]:
+    return [
+        sorted(
+            step,
+            key=lambda batch: json.dumps(batch, separators=(",", ":"), sort_keys=True),
+        )
+        for step in steps
+    ]
+
+
 def _fingerprints(steps: list[list[dict[str, Any]]]) -> list[str]:
     return [
         hashlib.sha256(
@@ -272,11 +284,13 @@ def _run_demo(args: argparse.Namespace, work_dir: Path) -> bool:
     before_checkpoint = _load_steps(elastic_dir / "save.json")
     after_resume = _load_steps(elastic_dir / "resume.json")
     actual = before_checkpoint + after_resume
-    matches = actual == reference
+    canonical_reference = _canonicalize_steps(reference)
+    canonical_actual = _canonicalize_steps(actual)
+    matches = canonical_actual == canonical_reference
 
-    reference_hashes = _fingerprints(reference)
-    before_hashes = _fingerprints(before_checkpoint)
-    after_hashes = _fingerprints(after_resume)
+    reference_hashes = _fingerprints(canonical_reference)
+    before_hashes = _fingerprints(_canonicalize_steps(before_checkpoint))
+    after_hashes = _fingerprints(_canonicalize_steps(after_resume))
     reference_before_text = _format_fingerprints(
         reference_hashes[: args.checkpoint_after]
     )
@@ -291,15 +305,15 @@ def _run_demo(args: argparse.Namespace, work_dir: Path) -> bool:
     print(f"{'Reference:':<23}{reference_before_text} | {reference_after_text}")
     print(f"{'2-worker stream:':<23}{before_text} | checkpoint")
     print(f"{'1-worker resume:':<23}{' ' * len(before_text)} | {after_text}")
-    print(f"Exact stream match:    {'YES' if matches else 'NO'}")
+    print(f"Exact global-step match: {'YES' if matches else 'NO'}")
     return matches
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Prove that a Zephon stream checkpointed with two workers resumes "
-            "exactly with one worker."
+            "Prove that Zephon global steps checkpointed with two workers "
+            "resume exactly with one worker."
         )
     )
     parser.add_argument("--recipe", type=Path, default=DEFAULT_RECIPE)

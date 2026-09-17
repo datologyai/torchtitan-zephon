@@ -4,7 +4,7 @@
 
 text_field = "text"
 seed = 42
-chunk_size = 2
+chunk_size = 4
 canonical_replicas = 2
 
 [[sources]]
