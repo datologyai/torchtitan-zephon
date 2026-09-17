@@ -85,6 +85,7 @@ def _load_data_config(data_config: str) -> dict[str, Any]:
 
     allowed_keys = {
         "sources",
+        "training",
         "text_field",
         "cache_dir",
         "seed",
@@ -151,8 +152,8 @@ class ZephonDataLoader(BaseDataLoader):
 
         seed: int = 42
         chunk_size: int = 64
-        shuffle: bool = True
-        """Shuffle shards and records; validation overrides disable this."""
+        training: bool = True
+        """Enable training-time shuffling and token-aware mixture scheduling."""
 
         repeat: bool = True
         """Repeat indefinitely, or stop after every source completes a pass."""
@@ -205,10 +206,10 @@ class ZephonDataLoader(BaseDataLoader):
             ),
             "chunk_size": config.chunk_size,
             "seed": config.seed,
-            "shuffle_shards": config.shuffle,
-            "shuffle_within_shard": config.shuffle,
+            "shuffle_shards": config.training,
+            "shuffle_within_shard": config.training,
         }
-        if config.shuffle:
+        if config.training:
             work_source_options["token_estimation"] = TokenEstimation()
         if config.repeat:
             work_source_options["exhausted_policy"] = "repeat"
@@ -243,6 +244,8 @@ class ZephonDataLoader(BaseDataLoader):
 
     @staticmethod
     def _validate_config(config: Config, dp_world_size: int) -> None:
+        if not isinstance(config.training, bool):
+            raise ValueError("dataloader.training must be true or false")
         if not config.sources:
             raise ValueError("dataloader.sources must not be empty")
         source_names = [source.name for source in config.sources]
@@ -388,7 +391,7 @@ def zephon_dataloader(
         aggregate_dir=aggregate_dir,
         run_id=run_id,
         fetch_parallelism=fetch_parallelism,
-        shuffle=True,
+        default_training=True,
         repeat=True,
     )
 
@@ -426,7 +429,7 @@ def zephon_validation_dataloader(
         aggregate_dir=aggregate_dir,
         run_id=run_id,
         fetch_parallelism=fetch_parallelism,
-        shuffle=False,
+        default_training=False,
         repeat=config.repeat,
     )
 
@@ -444,7 +447,7 @@ def _derive_zephon_config(
     aggregate_dir: str | None,
     run_id: str | None,
     fetch_parallelism: int | None,
-    shuffle: bool,
+    default_training: bool,
     repeat: bool,
 ) -> ZephonDataLoader.Config:
     deltas = {} if data_config is None else _load_data_config(data_config)
@@ -464,6 +467,6 @@ def _derive_zephon_config(
     }.items():
         if value is not None:
             deltas[name] = value
-    deltas["shuffle"] = shuffle
+    deltas.setdefault("training", default_training)
     deltas["repeat"] = repeat
     return derive(config, ZephonDataLoader.Config, **deltas)

@@ -89,7 +89,7 @@ def test_zephon_overrides_load_local_training_and_validation_recipes() -> None:
     from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
 
     assert isinstance(config.dataloader, ZephonDataLoader.Config)
-    assert config.dataloader.shuffle
+    assert config.dataloader.training
     assert config.dataloader.repeat
     assert config.dataloader.chunk_size == 4
     assert [source.name for source in config.dataloader.sources] == ["prose", "code"]
@@ -98,7 +98,7 @@ def test_zephon_overrides_load_local_training_and_validation_recipes() -> None:
 
     validation = config.validator.dataloader
     assert isinstance(validation, ZephonDataLoader.Config)
-    assert not validation.shuffle
+    assert not validation.training
     assert not validation.repeat
     assert [source.name for source in validation.sources] == ["validation"]
 
@@ -213,7 +213,7 @@ def test_zephon_validation_is_finite_without_token_estimation() -> None:
         num_tokens_per_batch=32,
     )
 
-    assert not config.shuffle
+    assert not config.training
     assert not config.repeat
     assert not loader._pipeline.ws.requires_token_priming
     assert list(loader)

@@ -1,6 +1,7 @@
 # A separate, deterministic validation source for the local demo.
 # Relative paths are resolved from this recipe file.
 
+training = false
 text_field = "text"
 seed = 42
 chunk_size = 4

@@ -75,6 +75,10 @@ default: Zephon calibrates each online source against TorchTitan's tokenizer,
 schedules fewer records from sources with longer documents, and checkpoints
 the calibrated ratios for reuse on resume.
 
+`training` defaults to `true`. Set `training = false` in a validation recipe
+to disable training-time shuffling and token estimation. The training and
+validation overrides supply those same defaults when the field is omitted.
+
 The integration deliberately uses Zephon's `TokenEstimation()` defaults rather
 than adding recipe knobs for calibration internals. `cache_dir` enables
 Zephon's file cache for all sources, not only `hf://` paths.
@@ -134,8 +138,7 @@ For the manual multi-GPU to single-GPU commands, see the catalog's
 Run the focused tests with:
 
 ```bash
-uv run pytest tests/unit_tests/test_zephon_dataloader_override.py \
-  tests/unit_tests/test_zephon_elastic_resume.py
+uv run pytest tests/unit_tests/test_zephon_dataloader_override.py
 ```
 
 `scripts/validate_zephon_install.sh` creates a clean environment, installs the

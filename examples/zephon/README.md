@@ -8,6 +8,9 @@ Zephon normalizes weights automatically and treats them as token proportions.
 Its default `TokenEstimation()` calibrates online sources against the
 TorchTitan tokenizer; no recipe flag is needed.
 
+Recipes default to `training = true`, which enables shuffling and token
+estimation. The validation recipe sets `training = false` explicitly.
+
 | Recipe | Purpose |
 | --- | --- |
 | `local_jsonl.toml` | Common 3:1 prose/code local JSONL smoke test. |
