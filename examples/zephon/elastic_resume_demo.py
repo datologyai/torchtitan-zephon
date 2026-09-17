@@ -286,7 +286,7 @@ def _run_demo(args: argparse.Namespace, work_dir: Path) -> bool:
     before_text = _format_fingerprints(before_hashes)
     after_text = _format_fingerprints(after_hashes)
     print("Zephon deterministic elastic resume")
-    print(f"Mixture weights:       {source_weights}")
+    print(f"Token mixture weights: {source_weights}")
     print("Data-parallel workers: 2 -> 1")
     print(f"{'Reference:':<23}{reference_before_text} | {reference_after_text}")
     print(f"{'2-worker stream:':<23}{before_text} | checkpoint")

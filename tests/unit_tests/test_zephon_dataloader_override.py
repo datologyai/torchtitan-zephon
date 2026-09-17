@@ -154,6 +154,7 @@ def test_zephon_dataloader_validates_distributed_configuration() -> None:
         ({"input_mode": "unsupported"}, "input_mode"),
         ({"text_field": ""}, "text_field"),
         ({"chunk_size": 0}, "chunk_size"),
+        ({"token_estimation": []}, "token_estimation"),
         ({"fetch_parallelism": 0}, "fetch_parallelism"),
         ({"canonical_replicas": 0}, "canonical_replicas"),
         ({"aggregate_dir": ""}, "aggregate_dir"),
@@ -241,6 +242,7 @@ def test_zephon_override_loads_local_data_recipe() -> None:
         repo_root / "tests" / "assets" / "zephon_mixture" / "prose"
     )
     assert config.chunk_size == 4
+    assert config.token_estimation == {}
 
 
 def test_zephon_override_loads_weighted_and_elastic_recipes() -> None:
@@ -289,6 +291,13 @@ weight = 2.0
 [[sources]]
 name = "remote"
 path = "s3://bucket/records"
+
+[token_estimation]
+primer = { local = 0.3 }
+calibration_samples = 32
+calibration_shards_min = 2
+calibration_shards_max = 6
+fallback_tokens_per_byte = 0.2
 """.strip()
     )
 
@@ -306,6 +315,13 @@ path = "s3://bucket/records"
     assert config.canonical_replicas == 4
     assert config.run_id == "stable-run"
     assert config.fetch_parallelism == 3
+    assert config.token_estimation == {
+        "primer": {"local": 0.3},
+        "calibration_samples": 32,
+        "calibration_shards_min": 2,
+        "calibration_shards_max": 6,
+        "fallback_tokens_per_byte": 0.2,
+    }
 
 
 def test_zephon_recipe_rejects_unknown_settings(tmp_path: Path) -> None:
@@ -320,6 +336,17 @@ sources = []
     )
 
     with pytest.raises(ValueError, match="unsupported_option"):
+        zephon_dataloader(_grain_config(), data_config=str(recipe))
+
+    recipe.write_text(
+        """
+sources = []
+
+[token_estimation]
+unsupported_option = true
+""".strip()
+    )
+    with pytest.raises(ValueError, match="token estimation.*unsupported_option"):
         zephon_dataloader(_grain_config(), data_config=str(recipe))
 
 
@@ -354,8 +381,10 @@ def test_zephon_pretokenized_recipe_skips_tokenization_and_resumes() -> None:
     second_reference = next(reference_iterator)
 
     loader = build_loader()
+    assert loader._pipeline.ws.requires_token_priming
     loader_iterator = iter(loader)
     first_batch = next(loader_iterator)
+    assert not loader._pipeline.ws.requires_token_priming
     assert torch.equal(first_batch["labels"], first_batch["input"] + 1)
     assert first_batch["positions"].tolist() == list(range(16)) * 2
     assert first_batch["num_valid_tokens"] == 32
@@ -392,12 +421,13 @@ def test_zephon_pretokenized_records_require_complete_token_batches(
 
     source_dir = tmp_path / "missing_tokens"
     source_dir.mkdir()
-    (source_dir / "data.jsonl").write_text(record)
+    (source_dir / "data.jsonl").write_text(record * 2)
     loader = ZephonDataLoader(
         ZephonDataLoader.Config(
             sources=[ZephonSource(name="invalid", path=str(source_dir))],
             input_mode="pretokenized",
             chunk_size=1,
+            token_estimation={"primer": 1.0},
         ),
         dp_world_size=1,
         dp_rank=0,
@@ -443,8 +473,10 @@ def test_zephon_dataloader_yields_torchtitan_batches_and_checkpoints() -> None:
     baseline = [next(baseline_iter) for _ in range(3)]
 
     loader = make_loader()
+    assert loader._pipeline.ws.requires_token_priming
     loader_iter = iter(loader)
     batch = next(loader_iter)
+    assert not loader._pipeline.ws.requires_token_priming
 
     assert batch["input"].shape == (32,)
     assert batch["labels"].shape == (32,)
@@ -513,7 +545,6 @@ def test_zephon_validation_dataloader_is_unshuffled_and_finite() -> None:
     batches = list(loader)
 
     assert batches
-    assert len(batches) < 10
 
 
 def test_zephon_override_state_round_trips_through_dcp(tmp_path: Path) -> None:

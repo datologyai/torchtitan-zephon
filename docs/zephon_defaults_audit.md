@@ -16,14 +16,17 @@ left implicit.
 | Positions | Emitted for online packing | TorchTitan consumes packed-document positions when present. |
 | Zephon batch size | One | One packed record already represents one TorchTitan token microbatch. |
 | Attention mask | Disabled | TorchTitan's causal attention path does not consume tokenizer masks. |
+| Mixture unit | Tokens | Source weights should describe model-visible token proportions, not document counts. |
+| Online mixture correction | `ensure_mixture(weight_by="auto")` | Smooth residual token drift after the work source's coarse allocation. |
 | Checkpoint representation | One opaque pickled byte value | TorchTitan DCP can preserve the complete public Zephon checkpoint object. |
 
 ## Workload tuning exposed by the recipe
 
 Source names, paths, formats, and weights describe the workload. `input_mode`,
-`text_field`, `cache_dir`, `seed`, `chunk_size`, `fetch_parallelism`,
-`canonical_replicas`, `aggregate_dir`, and `run_id` are also explicit because
-they affect data semantics, throughput, or restart identity.
+`text_field`, `cache_dir`, `seed`, `chunk_size`, `fetch_parallelism`, the
+serializable `TokenEstimation` settings, `canonical_replicas`, `aggregate_dir`,
+and `run_id` are also explicit because they affect data semantics, throughput,
+or restart identity.
 
 The override rejects unknown recipe keys. This is intentional: arbitrary
 pipeline options are not forwarded because many interact with ordering,
@@ -36,6 +39,7 @@ checkpointing, memory use, or distributed correctness.
 | Exhausted source policy | Repeat | Finite pass for `steps = -1`; repeat for bounded validation | Training is step-based, while validation follows TorchTitan's configured step policy. |
 | Shard shuffle | Enabled | Disabled | Evaluation order stays stable and easy to inspect. |
 | Within-shard shuffle | Enabled | Disabled | Training avoids long runs of adjacent records; evaluation preserves source order. |
+| Token estimation | Zephon defaults | Zephon defaults | Online inputs calibrate with the TorchTitan tokenizer; pretokenized inputs count `input_ids` directly. |
 | Long sample handling | Split | Do not split | Preserve all usable tokens instead of truncating long training records. |
 | Special tokens | BOS and EOS | BOS and EOS | Stated explicitly because sample boundaries are part of the training contract. |
 | Packing algorithm | Wrap | First fit | Keep the example stream simple and deterministic across canonical lanes. |

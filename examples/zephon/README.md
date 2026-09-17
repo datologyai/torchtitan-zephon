@@ -4,7 +4,9 @@ These recipes are the only Zephon-specific input to the TorchTitan override.
 Each source has a stable `name`, a local directory or `hf://` URI, an optional
 `fmt`, and an optional positive `weight`. `fmt` maps directly to Zephon's
 `Dataset.from_path(..., fmt=...)`; omit it to use Zephon's format detection.
-Zephon normalizes weights automatically.
+Zephon normalizes weights automatically and treats them as token proportions.
+Its default `TokenEstimation()` calibrates online sources against the
+TorchTitan tokenizer; no recipe flag is needed.
 
 | Recipe | Purpose |
 | --- | --- |
@@ -19,6 +21,12 @@ Use the recipe with the opt-in override described in
 [`docs/zephon.md`](../../docs/zephon.md). Keep real source definitions in a
 recipe rather than embedding them in a shell command; it makes their names,
 paths, and mixture weights easy to review and adapt.
+
+Add an optional `[token_estimation]` table only to tune Zephon's calibration
+settings or pin known tokens-per-byte ratios. The supported keys map directly
+to `TokenEstimation`: `primer`, `calibration_samples`,
+`calibration_shards_min`, `calibration_shards_max`, and
+`fallback_tokens_per_byte`.
 
 TorchTitan supplies the tokenizer to Zephon, so these data recipes do not
 contain a tokenizer path.
@@ -69,7 +77,8 @@ An optional `positions` sequence must have the same original length.
 
 The [`pretokenized_local_jsonl.toml`](pretokenized_local_jsonl.toml) recipe and
 checked-in fixture demonstrate this path. Zephon skips both tokenization and
-packing; mixing, checkpointing, and elastic resume retain the same behavior.
+packing, measures token cost from `input_ids`, and retains the same mixing,
+checkpointing, and elastic-resume behavior.
 
 ## Elastic TorchTitan launch
 

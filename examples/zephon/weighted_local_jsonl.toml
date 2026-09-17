@@ -1,4 +1,4 @@
-# A local mixture whose requested distribution is 75% prose and 25% code.
+# A local mixture requesting 75% prose tokens and 25% code tokens.
 # Relative paths are resolved from this recipe file.
 
 text_field = "text"

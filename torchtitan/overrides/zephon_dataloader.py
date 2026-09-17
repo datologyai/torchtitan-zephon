@@ -72,6 +72,35 @@ def _parse_sources(sources: Sequence[Mapping[str, Any]]) -> list[ZephonSource]:
     return parsed_sources
 
 
+_TOKEN_ESTIMATION_KEYS = {
+    "primer",
+    "calibration_samples",
+    "calibration_shards_min",
+    "calibration_shards_max",
+    "fallback_tokens_per_byte",
+}
+
+
+def _parse_token_estimation(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError("dataloader.token_estimation must be a table")
+    unknown_keys = set(value) - _TOKEN_ESTIMATION_KEYS
+    if unknown_keys:
+        raise ValueError(
+            "Unknown Zephon token estimation keys: " + ", ".join(sorted(unknown_keys))
+        )
+    return dict(value)
+
+
+def _pretokenized_token_count(payload: Any) -> int:
+    if not isinstance(payload, Mapping):
+        return 0
+    tokens = payload.get("input_ids")
+    if not isinstance(tokens, Sequence) or isinstance(tokens, (str, bytes)):
+        return 0
+    return len(tokens)
+
+
 def _resolve_recipe_path(path: str, recipe_dir: Path) -> str:
     if "://" in path or Path(path).is_absolute():
         return path
@@ -94,6 +123,7 @@ def _load_data_config(data_config: str) -> dict[str, Any]:
         "aggregate_dir",
         "run_id",
         "fetch_parallelism",
+        "token_estimation",
     }
     unknown_keys = set(values) - allowed_keys
     if unknown_keys:
@@ -117,23 +147,25 @@ def _load_data_config(data_config: str) -> dict[str, Any]:
         )
         for source in sources
     ]
+    if "token_estimation" in values:
+        values["token_estimation"] = _parse_token_estimation(values["token_estimation"])
     for key in ("cache_dir", "aggregate_dir"):
         if key in values and values[key] is not None:
             values[key] = _resolve_recipe_path(values[key], recipe_dir)
     return values
 
 
-def _require_zephon() -> tuple[Any, Any, Any, Any]:
+def _require_zephon() -> tuple[Any, Any, Any, Any, Any]:
     try:
         from zephon import Pipeline
         from zephon.io import Dataset
-        from zephon.work import MixtureSpec, StaticMixtureWorkSource
+        from zephon.work import MixtureSpec, StaticMixtureWorkSource, TokenEstimation
     except ImportError as exc:
         raise ImportError(
             "The Zephon dataloader override requires Zephon. Install the pinned "
             "distribution from requirements-zephon.txt."
         ) from exc
-    return Pipeline, Dataset, MixtureSpec, StaticMixtureWorkSource
+    return Pipeline, Dataset, MixtureSpec, StaticMixtureWorkSource, TokenEstimation
 
 
 class ZephonDataLoader(BaseDataLoader):
@@ -155,6 +187,9 @@ class ZephonDataLoader(BaseDataLoader):
 
         seed: int = 42
         chunk_size: int = 64
+        token_estimation: dict[str, Any] = field(default_factory=dict)
+        """Settings for the default token-aware mixture allocator."""
+
         shuffle: bool = True
         """Shuffle shards and records; validation overrides disable this."""
 
@@ -184,7 +219,13 @@ class ZephonDataLoader(BaseDataLoader):
         num_tokens_per_batch: int,
         **_: Any,
     ) -> None:
-        Pipeline, Dataset, MixtureSpec, StaticMixtureWorkSource = _require_zephon()
+        (
+            Pipeline,
+            Dataset,
+            MixtureSpec,
+            StaticMixtureWorkSource,
+            TokenEstimation,
+        ) = _require_zephon()
         self._validate_config(config, dp_world_size)
 
         datasets = [
@@ -200,6 +241,7 @@ class ZephonDataLoader(BaseDataLoader):
             "seed": config.seed,
             "shuffle_shards": config.shuffle,
             "shuffle_within_shard": config.shuffle,
+            "token_estimation": self._build_token_estimation(config, TokenEstimation),
         }
         if config.repeat:
             work_source_options["exhausted_policy"] = "repeat"
@@ -222,7 +264,9 @@ class ZephonDataLoader(BaseDataLoader):
                 max_length=max_context_length + 1,
                 split_long_samples=True,
                 special_tokens="bos_eos",
-            ).pack_flat(
+            )
+        if config.input_mode == "online":
+            pipeline = pipeline.ensure_mixture().pack_flat(
                 max_length=num_tokens_per_batch + 1,
                 algorithm="wrap",
                 emit_positions=True,
@@ -236,6 +280,19 @@ class ZephonDataLoader(BaseDataLoader):
         self._pretokenized_record_length = (
             num_tokens_per_batch + 1 if config.input_mode == "pretokenized" else None
         )
+
+    @staticmethod
+    def _build_token_estimation(config: Config, token_estimation_cls: Any) -> Any:
+        options = dict(config.token_estimation)
+        if (
+            config.input_mode == "pretokenized"
+            and options.get("primer", "measure") == "measure"
+        ):
+            options["measure"] = _pretokenized_token_count
+        try:
+            return token_estimation_cls(**options)
+        except TypeError as exc:
+            raise ValueError(f"Invalid dataloader.token_estimation: {exc}") from exc
 
     @staticmethod
     def _validate_config(config: Config, dp_world_size: int) -> None:
@@ -263,6 +320,7 @@ class ZephonDataLoader(BaseDataLoader):
             raise ValueError("dataloader.cache_dir must not be empty when set")
         if config.chunk_size <= 0:
             raise ValueError("dataloader.chunk_size must be positive")
+        _parse_token_estimation(config.token_estimation)
         if config.fetch_parallelism is not None and config.fetch_parallelism <= 0:
             raise ValueError("dataloader.fetch_parallelism must be positive when set")
         if config.canonical_replicas is not None and config.canonical_replicas <= 0:
@@ -412,6 +470,7 @@ def zephon_dataloader(
     cache_dir: str | None = None,
     seed: int | None = None,
     chunk_size: int | None = None,
+    token_estimation: Mapping[str, Any] | None = None,
     canonical_replicas: int | None = None,
     aggregate_dir: str | None = None,
     run_id: str | None = None,
@@ -427,6 +486,7 @@ def zephon_dataloader(
         cache_dir=cache_dir,
         seed=seed,
         chunk_size=chunk_size,
+        token_estimation=token_estimation,
         canonical_replicas=canonical_replicas,
         aggregate_dir=aggregate_dir,
         run_id=run_id,
@@ -452,6 +512,7 @@ def zephon_validation_dataloader(
     cache_dir: str | None = None,
     seed: int | None = None,
     chunk_size: int | None = None,
+    token_estimation: Mapping[str, Any] | None = None,
     canonical_replicas: int | None = None,
     aggregate_dir: str | None = None,
     run_id: str | None = None,
@@ -467,6 +528,7 @@ def zephon_validation_dataloader(
         cache_dir=cache_dir,
         seed=seed,
         chunk_size=chunk_size,
+        token_estimation=token_estimation,
         canonical_replicas=canonical_replicas,
         aggregate_dir=aggregate_dir,
         run_id=run_id,
@@ -486,6 +548,7 @@ def _derive_zephon_config(
     cache_dir: str | None,
     seed: int | None,
     chunk_size: int | None,
+    token_estimation: Mapping[str, Any] | None,
     canonical_replicas: int | None,
     aggregate_dir: str | None,
     run_id: str | None,
@@ -504,6 +567,11 @@ def _derive_zephon_config(
         "cache_dir": cache_dir,
         "seed": seed,
         "chunk_size": chunk_size,
+        "token_estimation": (
+            _parse_token_estimation(token_estimation)
+            if token_estimation is not None
+            else None
+        ),
         "canonical_replicas": canonical_replicas,
         "aggregate_dir": aggregate_dir,
         "run_id": run_id,
