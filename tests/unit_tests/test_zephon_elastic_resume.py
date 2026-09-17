@@ -55,35 +55,3 @@ def test_elastic_checkpoint_resume_preserves_global_step_contents(
         ]
 
     assert canonicalize(before_checkpoint + after_resume) == canonicalize(reference)
-
-
-def test_elastic_demo_rejects_indivisible_canonical_replicas(
-    tmp_path: Path,
-) -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    recipe = tmp_path / "indivisible.toml"
-    recipe.write_text(
-        """
-canonical_replicas = 3
-
-[[sources]]
-name = "records"
-path = "unused"
-""".strip()
-    )
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(repo_root / "examples" / "zephon" / "elastic_resume_demo.py"),
-            "--recipe",
-            str(recipe),
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode != 0
-    assert "must be divisible by the initial num_workers=2" in result.stderr

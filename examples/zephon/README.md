@@ -12,9 +12,7 @@ TorchTitan tokenizer; no recipe flag is needed.
 | --- | --- |
 | `local_jsonl.toml` | Common 3:1 prose/code local JSONL smoke test. |
 | `validation_local_jsonl.toml` | Separate deterministic validation source. |
-| `weighted_local_jsonl.toml` | Additional explicit weighted-mixture example. |
 | `elastic_local_jsonl.toml` | Local 3:1 mixture with two canonical data lanes. |
-| `hf_squad.toml` | Public Hugging Face Hub source. |
 
 Use the recipe with the opt-in override described in
 [`docs/zephon.md`](../../docs/zephon.md). Keep real source definitions in a

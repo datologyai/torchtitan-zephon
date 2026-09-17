@@ -79,9 +79,10 @@ The integration deliberately uses Zephon's `TokenEstimation()` defaults rather
 than adding recipe knobs for calibration internals. `cache_dir` enables
 Zephon's file cache for all sources, not only `hf://` paths.
 
-The [example catalog](../examples/zephon/README.md) includes local, weighted,
-Hugging Face, and elastic recipes. Zephon reads Hugging Face Parquet shards
-directly; the pinned `hf` extra supplies the needed support.
+The [example catalog](../examples/zephon/README.md) keeps only the local,
+validation, and elastic recipes used by the demonstrations. Remote sources use
+the same recipe structure shown above; the pinned `hf` extra lets Zephon read
+Hugging Face Parquet shards directly.
 
 Zephon tokenizes each source's text field with the TorchTitan tokenizer, splits
 long samples, adds BOS/EOS boundaries, and packs the result into complete
