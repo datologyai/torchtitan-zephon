@@ -154,7 +154,6 @@ def test_zephon_dataloader_validates_distributed_configuration() -> None:
         ({"input_mode": "unsupported"}, "input_mode"),
         ({"text_field": ""}, "text_field"),
         ({"chunk_size": 0}, "chunk_size"),
-        ({"token_estimation": []}, "token_estimation"),
         ({"fetch_parallelism": 0}, "fetch_parallelism"),
         ({"canonical_replicas": 0}, "canonical_replicas"),
         ({"aggregate_dir": ""}, "aggregate_dir"),
@@ -241,8 +240,7 @@ def test_zephon_override_loads_local_data_recipe() -> None:
     assert config.sources[0].path == str(
         repo_root / "tests" / "assets" / "zephon_mixture" / "prose"
     )
-    assert config.chunk_size == 4
-    assert config.token_estimation == {}
+    assert config.chunk_size == 2
 
 
 def test_zephon_override_loads_weighted_and_elastic_recipes() -> None:
@@ -291,13 +289,6 @@ weight = 2.0
 [[sources]]
 name = "remote"
 path = "s3://bucket/records"
-
-[token_estimation]
-primer = { local = 0.3 }
-calibration_samples = 32
-calibration_shards_min = 2
-calibration_shards_max = 6
-fallback_tokens_per_byte = 0.2
 """.strip()
     )
 
@@ -315,13 +306,6 @@ fallback_tokens_per_byte = 0.2
     assert config.canonical_replicas == 4
     assert config.run_id == "stable-run"
     assert config.fetch_parallelism == 3
-    assert config.token_estimation == {
-        "primer": {"local": 0.3},
-        "calibration_samples": 32,
-        "calibration_shards_min": 2,
-        "calibration_shards_max": 6,
-        "fallback_tokens_per_byte": 0.2,
-    }
 
 
 def test_zephon_recipe_rejects_unknown_settings(tmp_path: Path) -> None:
@@ -336,17 +320,6 @@ sources = []
     )
 
     with pytest.raises(ValueError, match="unsupported_option"):
-        zephon_dataloader(_grain_config(), data_config=str(recipe))
-
-    recipe.write_text(
-        """
-sources = []
-
-[token_estimation]
-unsupported_option = true
-""".strip()
-    )
-    with pytest.raises(ValueError, match="token estimation.*unsupported_option"):
         zephon_dataloader(_grain_config(), data_config=str(recipe))
 
 
@@ -405,6 +378,7 @@ def test_zephon_pretokenized_recipe_skips_tokenization_and_resumes() -> None:
                 assert actual[key] == expected[key]
 
 
+@pytest.mark.filterwarnings("ignore:\\[zephon\\] token-aware mixture priming fell back")
 @pytest.mark.parametrize(
     ("record", "message"),
     [
@@ -427,7 +401,6 @@ def test_zephon_pretokenized_records_require_complete_token_batches(
             sources=[ZephonSource(name="invalid", path=str(source_dir))],
             input_mode="pretokenized",
             chunk_size=1,
-            token_estimation={"primer": 1.0},
         ),
         dp_world_size=1,
         dp_rank=0,

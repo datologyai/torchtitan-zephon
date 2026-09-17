@@ -1,9 +1,9 @@
-# The common two-source recipe shared by the Zephon reference integrations.
+# The common token-aware two-source recipe shared by the Zephon integrations.
 # Relative paths are resolved from this recipe file.
 
 text_field = "text"
 seed = 42
-chunk_size = 4
+chunk_size = 2
 
 [[sources]]
 name = "prose"

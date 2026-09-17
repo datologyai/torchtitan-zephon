@@ -77,23 +77,9 @@ schedules fewer records from sources with longer documents, and then uses
 `ensure_mixture` after tokenization to smooth the remaining token-level drift.
 The calibrated ratios are checkpointed and reused on resume.
 
-The default `TokenEstimation()` settings need no recipe entry. When a corpus
-needs different calibration bounds or known tokens-per-byte ratios, add the
-serializable subset of Zephon's configuration:
-
-```toml
-[token_estimation]
-primer = { web = 0.24, code = 0.31 }
-calibration_samples = 4096
-calibration_shards_min = 4
-calibration_shards_max = 16
-fallback_tokens_per_byte = 0.25
-```
-
-Use `primer = "measure"` (the default) to measure every source, a partial
-mapping to pin known ratios and measure the rest, or one positive number for a
-global ratio. `cache_dir` enables Zephon's file cache for all sources, not only
-`hf://` paths.
+The integration deliberately uses Zephon's `TokenEstimation()` defaults rather
+than adding recipe knobs for calibration internals. `cache_dir` enables
+Zephon's file cache for all sources, not only `hf://` paths.
 
 The [example catalog](../examples/zephon/README.md) includes equal-weight,
 weighted, Hugging Face, elastic, and pretokenized recipes. Zephon reads Hugging
@@ -126,7 +112,7 @@ For elastic resume, keep these values stable:
   the current DP world size.
 - `aggregate_dir`: shared storage used to aggregate lane checkpoint state.
 - `run_id`: the stable identity of this data stream.
-- Recipe, token-estimation settings, tokenizer, token budgets, and seed.
+- Recipe, tokenizer, token budgets, and seed.
 
 The current DP world size may change. The canonical lane count must not.
 

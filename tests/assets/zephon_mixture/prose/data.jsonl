@@ -2,7 +2,3 @@
 {"text":"A careful experiment begins by stating what it will measure and why."}
 {"text":"Small documents are enough to demonstrate a deterministic mixture."}
 {"text":"A checkpoint should preserve progress without preserving a machine layout."}
-{"text":"Token-aware mixing keeps document length from silently changing the requested proportions."}
-{"text":"A stable recipe makes the data contract easy to inspect and reproduce."}
-{"text":"Validation follows the same input path while preserving a finite deterministic order."}
-{"text":"Elastic workers may change while the logical stream continues from its checkpoint."}

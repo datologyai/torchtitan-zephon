@@ -23,10 +23,9 @@ left implicit.
 ## Workload tuning exposed by the recipe
 
 Source names, paths, formats, and weights describe the workload. `input_mode`,
-`text_field`, `cache_dir`, `seed`, `chunk_size`, `fetch_parallelism`, the
-serializable `TokenEstimation` settings, `canonical_replicas`, `aggregate_dir`,
-and `run_id` are also explicit because they affect data semantics, throughput,
-or restart identity.
+`text_field`, `cache_dir`, `seed`, `chunk_size`, `fetch_parallelism`,
+`canonical_replicas`, `aggregate_dir`, and `run_id` are also explicit because
+they affect data semantics, throughput, or restart identity.
 
 The override rejects unknown recipe keys. This is intentional: arbitrary
 pipeline options are not forwarded because many interact with ordering,

@@ -3,7 +3,7 @@
 
 text_field = "text"
 seed = 42
-chunk_size = 4
+chunk_size = 2
 
 [[sources]]
 name = "prose"

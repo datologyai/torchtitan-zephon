@@ -22,12 +22,6 @@ Use the recipe with the opt-in override described in
 recipe rather than embedding them in a shell command; it makes their names,
 paths, and mixture weights easy to review and adapt.
 
-Add an optional `[token_estimation]` table only to tune Zephon's calibration
-settings or pin known tokens-per-byte ratios. The supported keys map directly
-to `TokenEstimation`: `primer`, `calibration_samples`,
-`calibration_shards_min`, `calibration_shards_max`, and
-`fallback_tokens_per_byte`.
-
 TorchTitan supplies the tokenizer to Zephon, so these data recipes do not
 contain a tokenizer path.
 
