@@ -44,11 +44,12 @@ state without training a model:
 uv run --no-sync python examples/zephon/elastic_resume_demo.py
 ```
 
-The demo creates an uninterrupted two-worker reference stream, checkpoints a
-second stream after two global steps, resumes it with one worker, and compares
-every TorchTitan trainer-batch field. Lane-to-worker assignment may reorder
-batches after the topology change, so comparison is order-independent within
-each global step. A mismatch exits nonzero.
+By default the demo checks both DP 2 -> 1 and DP 1 -> 2. For each direction it
+creates an uninterrupted reference stream, checkpoints a second stream after
+two global steps, and compares every TorchTitan trainer-batch field after the
+resume. Lane-to-worker assignment may reorder batches after the topology
+change, so comparison is order-independent within each global step. A mismatch
+exits nonzero.
 
 Pass `--work-dir PATH` to retain the checkpoint and raw JSON stream records for
 diagnosis.
@@ -61,14 +62,15 @@ On a Linux machine with two CUDA GPUs, run:
 examples/zephon/run_training_smoke.sh ./outputs/zephon-training-smoke
 ```
 
-Use a new output path for every invocation. After initial compilation and
-tokenizer setup, this bounded debug-model run should complete in a few minutes
-on a typical development GPU. The script runs two phases:
+Use a new output path for every invocation. Additional TorchTitan arguments may
+follow the output path. After initial compilation and tokenizer setup, this
+bounded debug-model run should complete in a few minutes on a typical
+development GPU. The script runs two phases:
 
-1. Train through step 2 on two GPUs and save TorchTitan model and Zephon
-   dataloader checkpoints.
-2. Restore the latest completed checkpoint on one GPU and train step 3 with the
-   same canonical lanes and logical global batch.
+1. Train through step 2 on the configured GPU count and save TorchTitan model
+   and Zephon dataloader checkpoints.
+2. Restore the latest completed checkpoint on the configured GPU count and
+   train step 3 with the same canonical lanes and logical global batch.
 
 The final line is:
 
@@ -86,6 +88,32 @@ FIRST_PHASE_GPUS=1 \
 
 That exercises model and dataloader checkpoint/resume but does not demonstrate
 a physical data-parallel resize.
+
+Fixed TP and PP examples use the same runner:
+
+```bash
+FIRST_PHASE_GPUS=2 SECOND_PHASE_GPUS=2 \
+  examples/zephon/run_training_smoke.sh ./outputs/zephon-training-smoke-tp2 \
+  --parallelism.tensor_parallel_degree 2 \
+  --parallelism.data_parallel_shard_degree 1
+
+FIRST_PHASE_GPUS=2 SECOND_PHASE_GPUS=2 \
+  examples/zephon/run_training_smoke.sh ./outputs/zephon-training-smoke-pp2 \
+  --parallelism.pipeline_parallel_degree 2 \
+  --parallelism.pipeline_parallel_schedule 1F1B \
+  --parallelism.num_pp_microbatches 2 \
+  --parallelism.data_parallel_shard_degree 1
+```
+
+## Acceptance status
+
+On 2026-09-18, PR #1 commit `5169889676447b25948bc6142483067b47097dfe`
+passed the focused 10-test suite, the clean-install validator, both CPU elastic
+directions, GPU DP 1 -> 1, DP 2 -> 1, DP 1 -> 2, TP=2 with DP=1, and PP=2 with
+DP=1. The GPU runs used a two-GPU `g7.12xlarge` and resumed completed step-2
+DCP checkpoints through step 3. This matrix does not establish support for
+multi-node runs, elastic changes combined with model parallelism, or arbitrary
+mixed topologies.
 
 ## What the demo does
 

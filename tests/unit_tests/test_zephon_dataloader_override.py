@@ -20,10 +20,10 @@ from torchtitan.components.data.loader import BaseDataLoader, GrainDataLoader
 from torchtitan.components.loss import IGNORE_INDEX
 from torchtitan.components.tokenizer import HuggingFaceTokenizer
 from torchtitan.config import (
-    Configurable,
-    OverrideConfig,
     apply_overrides,
     clear_overrides,
+    Configurable,
+    OverrideConfig,
 )
 from torchtitan.hf_datasets.text_datasets import DATASETS
 
@@ -108,9 +108,9 @@ def test_zephon_overrides_load_local_training_and_validation_recipes() -> None:
 
 def test_zephon_configuration_rejects_unsupported_contracts(tmp_path: Path) -> None:
     from torchtitan.overrides.zephon_dataloader import (
+        zephon_dataloader,
         ZephonDataLoader,
         ZephonSource,
-        zephon_dataloader,
     )
 
     with pytest.raises(ValueError, match="does not yet support.*max_num_documents"):
@@ -140,8 +140,8 @@ def test_zephon_training_batches_and_checkpoint_continuation() -> None:
     pytest.importorskip("zephon")
 
     from torchtitan.overrides.zephon_dataloader import (
-        ZephonDataLoader,
         zephon_dataloader,
+        ZephonDataLoader,
     )
 
     repo_root = Path(__file__).resolve().parents[2]
@@ -193,8 +193,8 @@ def test_zephon_validation_is_finite_without_token_estimation() -> None:
     pytest.importorskip("zephon")
 
     from torchtitan.overrides.zephon_dataloader import (
-        ZephonDataLoader,
         zephon_validation_dataloader,
+        ZephonDataLoader,
     )
 
     repo_root = Path(__file__).resolve().parents[2]
@@ -361,5 +361,11 @@ def test_cpu_elastic_resume_directions(tmp_path: Path, topology: str) -> None:
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+    initial_workers, resume_workers = topology.split("-to-")
+    assert (
+        f"Data-parallel workers: {initial_workers} -> {resume_workers}" in result.stdout
+    )
+    assert f"{initial_workers}-worker stream:" in result.stdout
+    assert f"{resume_workers}-worker resume:" in result.stdout
     assert "Exact global-step match: YES" in result.stdout
     assert "Checkpoint SHA-256:" in result.stdout

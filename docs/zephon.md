@@ -141,8 +141,8 @@ reaches that bound, matching the stock loader's validation semantics.
 
 ## Temporary constraints
 
-- Online mode reads `tokenizer_path` from TorchTitan's tokenizer because
-  Zephon's public tokenizer API currently accepts a tokenizer identifier.
+- Online mode adapts the tokenizer instance already built by TorchTitan to
+  Zephon's tokenizer protocol; it does not rebuild or download a tokenizer.
 - `dataloader.max_num_documents` is rejected until Zephon supports the
   corresponding contract; it is never silently ignored.
 - Zephon checkpoint state is opaque bytes inside TorchTitan DCP.
@@ -168,3 +168,24 @@ scripts/validate_zephon_install.sh
 ```
 
 Set `ZEPHON_WHEEL=/path/to/zephon.whl` to validate a local release candidate.
+
+### Acceptance matrix
+
+PR #1 commit `5169889676447b25948bc6142483067b47097dfe` was accepted on
+2026-09-18 using two NVIDIA RTX PRO 4500 Blackwell Server Edition GPUs. The
+focused suite and clean-install validator passed 10 tests. The CPU demo matched
+every `TrainerBatch` field, order-independent within each global step, for both
+DP 2 -> 1 and DP 1 -> 2. The GPU trainer passed DP 1 -> 1, DP 2 -> 1, DP 1 -> 2,
+TP=2 with DP=1, and PP=2 with DP=1; every case restored a completed step-2 DCP
+checkpoint and completed step 3.
+
+TorchTitan calls the dataloader state interface on every distributed rank.
+Accordingly, Zephon checkpoint `world_size` and `global_rank` cover the complete
+distributed world, while `dp_degree` and `dp_group_id` remain derived from the
+batch mesh. Model-parallel ranks sharing a DP identity therefore consume the
+same data and all participate in checkpoint aggregation. DCP stores one
+`dataloader.zephon` value per checkpoint without conflicting values.
+
+This validation did not cover EP, multi-node, DP sizes above two, combined
+TP+PP, or elastic DP changes combined with TP or PP. It is not evidence for
+arbitrary elastic or mixed-topology support.
