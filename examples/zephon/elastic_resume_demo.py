@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import pickle
+import shutil
 import socket
 import subprocess
 import sys
@@ -144,10 +145,15 @@ def _run_phase(
     max_context_length: int,
     num_tokens_per_batch: int,
 ) -> None:
-    torchrun = Path(sys.executable).with_name("torchrun")
+    torchrun = shutil.which("torchrun")
+    if torchrun is None:
+        sibling_torchrun = Path(sys.executable).with_name("torchrun")
+        if not sibling_torchrun.is_file():
+            raise FileNotFoundError("torchrun was not found on PATH or next to Python")
+        torchrun = str(sibling_torchrun)
     master_port = _find_free_local_port()
     command = [
-        str(torchrun),
+        torchrun,
         "--nnodes=1",
         f"--nproc-per-node={num_workers}",
         "--master-addr=127.0.0.1",
