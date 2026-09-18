@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Demonstrate Zephon global-step preservation from two workers to one."""
+"""Demonstrate Zephon global-step preservation across DP topology changes."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import sys
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
@@ -28,8 +28,7 @@ if TYPE_CHECKING:
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RECIPE = REPO_ROOT / "examples" / "zephon" / "elastic_local_jsonl.toml"
 DEFAULT_TOKENIZER = REPO_ROOT / "tests" / "assets" / "tokenizer"
-INITIAL_NUM_WORKERS = 2
-RESUME_NUM_WORKERS = 1
+TOPOLOGIES = ((2, 1), (1, 2))
 
 
 def _find_free_local_port() -> int:
@@ -79,8 +78,8 @@ def _worker(args: argparse.Namespace) -> None:
 
     from torchtitan.components.tokenizer import HuggingFaceTokenizer
     from torchtitan.overrides.zephon_dataloader import (
-        _load_data_config,
         ZephonDataLoader,
+        _load_data_config,
     )
 
     dist.init_process_group("gloo")
@@ -220,10 +219,12 @@ def _format_fingerprints(fingerprints: list[str]) -> str:
     return "  ".join(fingerprints)
 
 
-def _validate_worker_topology(canonical_replicas: int) -> None:
+def _validate_worker_topology(
+    canonical_replicas: int, initial_num_workers: int, resume_num_workers: int
+) -> None:
     for phase, num_workers in (
-        ("initial", INITIAL_NUM_WORKERS),
-        ("resume", RESUME_NUM_WORKERS),
+        ("initial", initial_num_workers),
+        ("resume", resume_num_workers),
     ):
         if canonical_replicas % num_workers:
             raise ValueError(
@@ -232,7 +233,13 @@ def _validate_worker_topology(canonical_replicas: int) -> None:
             )
 
 
-def _run_demo(args: argparse.Namespace, work_dir: Path) -> bool:
+def _run_demo(
+    args: argparse.Namespace,
+    work_dir: Path,
+    *,
+    initial_num_workers: int,
+    resume_num_workers: int,
+) -> bool:
     if args.checkpoint_after <= 0 or args.checkpoint_after >= args.total_steps:
         raise ValueError("checkpoint-after must be between 1 and total-steps - 1")
 
@@ -241,7 +248,9 @@ def _run_demo(args: argparse.Namespace, work_dir: Path) -> bool:
     canonical_replicas = recipe_values.get("canonical_replicas")
     if not isinstance(canonical_replicas, int) or canonical_replicas <= 0:
         raise ValueError("The elastic demo requires positive canonical_replicas")
-    _validate_worker_topology(canonical_replicas)
+    _validate_worker_topology(
+        canonical_replicas, initial_num_workers, resume_num_workers
+    )
     source_weights = ", ".join(
         f"{source['name']}={source.get('weight', 1.0):g}"
         for source in recipe_values["sources"]
@@ -257,7 +266,7 @@ def _run_demo(args: argparse.Namespace, work_dir: Path) -> bool:
     }
     _run_phase(
         phase="reference",
-        num_workers=INITIAL_NUM_WORKERS,
+        num_workers=initial_num_workers,
         num_steps=args.total_steps,
         output_dir=reference_dir,
         run_id="zephon-elastic-reference",
@@ -265,7 +274,7 @@ def _run_demo(args: argparse.Namespace, work_dir: Path) -> bool:
     )
     _run_phase(
         phase="save",
-        num_workers=INITIAL_NUM_WORKERS,
+        num_workers=initial_num_workers,
         num_steps=args.checkpoint_after,
         output_dir=elastic_dir,
         run_id="zephon-elastic-resume",
@@ -273,7 +282,7 @@ def _run_demo(args: argparse.Namespace, work_dir: Path) -> bool:
     )
     _run_phase(
         phase="resume",
-        num_workers=RESUME_NUM_WORKERS,
+        num_workers=resume_num_workers,
         num_steps=args.total_steps - args.checkpoint_after,
         output_dir=elastic_dir,
         run_id="zephon-elastic-resume",
@@ -299,22 +308,23 @@ def _run_demo(args: argparse.Namespace, work_dir: Path) -> bool:
     )
     before_text = _format_fingerprints(before_hashes)
     after_text = _format_fingerprints(after_hashes)
+    checkpoint_path = elastic_dir / "checkpoint.pkl"
+    checkpoint_sha256 = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
     print("Zephon deterministic elastic resume")
     print(f"Token mixture weights: {source_weights}")
-    print("Data-parallel workers: 2 -> 1")
+    print(f"Data-parallel workers: {initial_num_workers} -> {resume_num_workers}")
     print(f"{'Reference:':<23}{reference_before_text} | {reference_after_text}")
     print(f"{'2-worker stream:':<23}{before_text} | checkpoint")
-    print(f"{'1-worker resume:':<23}{' ' * len(before_text)} | {after_text}")
+    resume_label = f"{resume_num_workers}-worker resume:"
+    print(f"{resume_label:<23}{' ' * len(before_text)} | {after_text}")
     print(f"Exact global-step match: {'YES' if matches else 'NO'}")
+    print(f"Checkpoint SHA-256: {checkpoint_sha256}")
     return matches
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Prove that Zephon global steps checkpointed with two workers "
-            "resume exactly with one worker."
-        )
+        description=("Prove that Zephon global steps resume exactly across DP changes.")
     )
     parser.add_argument("--recipe", type=Path, default=DEFAULT_RECIPE)
     parser.add_argument("--tokenizer-path", type=Path, default=DEFAULT_TOKENIZER)
@@ -326,6 +336,12 @@ def _parse_args() -> argparse.Namespace:
         "--work-dir",
         type=Path,
         help="Keep checkpoints and stream records in this directory.",
+    )
+    parser.add_argument(
+        "--topology",
+        choices=["both", "2-to-1", "1-to-2"],
+        default="both",
+        help="Elastic direction to validate (default: both).",
     )
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
@@ -347,14 +363,36 @@ def main() -> None:
         _worker(args)
         return
 
+    topologies = {
+        "both": TOPOLOGIES,
+        "2-to-1": ((2, 1),),
+        "1-to-2": ((1, 2),),
+    }[args.topology]
+
+    def run_all(run_dir: Path) -> bool:
+        results = []
+        for initial_num_workers, resume_num_workers in topologies:
+            topology_dir = (
+                run_dir / f"dp{initial_num_workers}-to-dp{resume_num_workers}"
+            )
+            results.append(
+                _run_demo(
+                    args,
+                    topology_dir,
+                    initial_num_workers=initial_num_workers,
+                    resume_num_workers=resume_num_workers,
+                )
+            )
+        return all(results)
+
     if args.work_dir is not None:
         args.work_dir.mkdir(parents=True, exist_ok=True)
         run_dir = Path(tempfile.mkdtemp(prefix="run-", dir=args.work_dir))
-        matches = _run_demo(args, run_dir)
+        matches = run_all(run_dir)
         print(f"Artifacts:             {run_dir}")
     else:
         with tempfile.TemporaryDirectory(prefix="zephon-elastic-demo-") as temp_dir:
-            matches = _run_demo(args, Path(temp_dir))
+            matches = run_all(Path(temp_dir))
     if not matches:
         raise SystemExit(1)
 

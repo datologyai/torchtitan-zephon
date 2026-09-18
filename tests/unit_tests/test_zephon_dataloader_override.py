@@ -5,9 +5,12 @@
 # LICENSE file in the root directory of this source tree.
 
 import importlib
+import pickle
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from unittest import mock
 
 import pytest
 import torch
@@ -17,10 +20,10 @@ from torchtitan.components.data.loader import BaseDataLoader, GrainDataLoader
 from torchtitan.components.loss import IGNORE_INDEX
 from torchtitan.components.tokenizer import HuggingFaceTokenizer
 from torchtitan.config import (
-    apply_overrides,
-    clear_overrides,
     Configurable,
     OverrideConfig,
+    apply_overrides,
+    clear_overrides,
 )
 from torchtitan.hf_datasets.text_datasets import DATASETS
 
@@ -105,9 +108,9 @@ def test_zephon_overrides_load_local_training_and_validation_recipes() -> None:
 
 def test_zephon_configuration_rejects_unsupported_contracts(tmp_path: Path) -> None:
     from torchtitan.overrides.zephon_dataloader import (
-        zephon_dataloader,
         ZephonDataLoader,
         ZephonSource,
+        zephon_dataloader,
     )
 
     with pytest.raises(ValueError, match="does not yet support.*max_num_documents"):
@@ -137,8 +140,8 @@ def test_zephon_training_batches_and_checkpoint_continuation() -> None:
     pytest.importorskip("zephon")
 
     from torchtitan.overrides.zephon_dataloader import (
-        zephon_dataloader,
         ZephonDataLoader,
+        zephon_dataloader,
     )
 
     repo_root = Path(__file__).resolve().parents[2]
@@ -190,8 +193,8 @@ def test_zephon_validation_is_finite_without_token_estimation() -> None:
     pytest.importorskip("zephon")
 
     from torchtitan.overrides.zephon_dataloader import (
-        zephon_validation_dataloader,
         ZephonDataLoader,
+        zephon_validation_dataloader,
     )
 
     repo_root = Path(__file__).resolve().parents[2]
@@ -267,3 +270,96 @@ def test_zephon_override_state_round_trips_through_dcp(tmp_path: Path) -> None:
             assert torch.equal(actual[key], expected[key])
         else:
             assert actual[key] == expected[key]
+
+
+def test_zephon_checkpoint_rejects_missing_corrupt_and_incompatible_state() -> None:
+    from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
+
+    loader = object.__new__(ZephonDataLoader)
+    loader._pipeline = mock.Mock()
+
+    with pytest.raises(ValueError, match="empty during resume"):
+        loader.load_state_dict({})
+    with pytest.raises(ValueError, match="missing 'zephon'"):
+        loader.load_state_dict({"other": b"value"})
+    with pytest.raises(ValueError, match="Expected.*bytes"):
+        loader.load_state_dict({"zephon": "not-bytes"})
+    with pytest.raises(ValueError, match="corrupt pickle"):
+        loader.load_state_dict({"zephon": b"not-a-pickle"})
+
+    loader._pipeline.restore.side_effect = RuntimeError("bad Zephon state")
+    with pytest.raises(ValueError, match="malformed or incompatible"):
+        loader.load_state_dict({"zephon": pickle.dumps({"wrong": "shape"})})
+
+
+def test_runtime_coordination_uses_all_checkpointing_ranks() -> None:
+    from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
+
+    zephon_module = importlib.import_module("torchtitan.overrides.zephon_dataloader")
+    config = ZephonDataLoader.Config(canonical_replicas=2)
+    with (
+        mock.patch.object(zephon_module.dist, "is_initialized", return_value=True),
+        mock.patch.object(zephon_module.dist, "get_world_size", return_value=4),
+        mock.patch.object(zephon_module.dist, "get_rank", return_value=3),
+    ):
+        options = ZephonDataLoader._runtime_options(config, dp_world_size=2, dp_rank=1)
+
+    assert options["dp_degree"] == 2
+    assert options["dp_group_id"] == 1
+    assert options["world_size"] == 4
+    assert options["global_rank"] == 3
+
+    with mock.patch.object(zephon_module.dist, "is_initialized", return_value=False):
+        pure_dp = ZephonDataLoader._runtime_options(config, dp_world_size=2, dp_rank=1)
+    assert pure_dp["dp_degree"] == 2
+    assert pure_dp["dp_group_id"] == 1
+    assert "world_size" not in pure_dp
+    assert "global_rank" not in pure_dp
+
+
+def test_tokenizer_adapter_reuses_torchtitan_tokenizer_instance() -> None:
+    from torchtitan.overrides.zephon_dataloader import _ZephonTokenizerAdapter
+
+    tokenizer = mock.Mock()
+    tokenizer.tokenizer_path = "/checked-in/tokenizer"
+    tokenizer.bos_id = 1
+    tokenizer.eos_id = 2
+    tokenizer.encode.side_effect = lambda text, **_: [len(text)]
+    adapter = _ZephonTokenizerAdapter(tokenizer)
+
+    assert adapter.name_or_path == tokenizer.tokenizer_path
+    assert adapter(["one", "three"], add_special_tokens=False) == {
+        "input_ids": [[3], [5]],
+        "attention_mask": [[1], [1]],
+    }
+    assert [call.args[0] for call in tokenizer.encode.call_args_list] == [
+        "one",
+        "three",
+    ]
+    assert all(
+        call.kwargs == {"add_bos": False, "add_eos": False}
+        for call in tokenizer.encode.call_args_list
+    )
+
+
+@pytest.mark.parametrize("topology", ["2-to-1", "1-to-2"])
+def test_cpu_elastic_resume_directions(tmp_path: Path, topology: str) -> None:
+    pytest.importorskip("zephon")
+    repo_root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "examples/zephon/elastic_resume_demo.py"),
+            "--topology",
+            topology,
+            "--work-dir",
+            str(tmp_path),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Exact global-step match: YES" in result.stdout
+    assert "Checkpoint SHA-256:" in result.stdout

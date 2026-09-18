@@ -9,6 +9,10 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 dump_folder=${1:-"${repo_root}/outputs/zephon-training-smoke"}
+if (( $# > 0 )); then
+    shift
+fi
+extra_args=("$@")
 first_phase_gpus=${FIRST_PHASE_GPUS:-2}
 second_phase_gpus=${SECOND_PHASE_GPUS:-1}
 first_phase_steps=${FIRST_PHASE_STEPS:-2}
@@ -38,11 +42,26 @@ common_args=(
 echo "Phase 1: train ${first_phase_steps} steps with ${first_phase_gpus} GPU(s)"
 NGPU="${first_phase_gpus}" MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh \
     "${common_args[@]}" \
+    "${extra_args[@]}" \
     --training.steps "${first_phase_steps}"
+
+completed_checkpoint="${dump_folder}/checkpoint/step-${first_phase_steps}"
+if [[ ! -f "${completed_checkpoint}/.metadata" ]]; then
+    echo "Phase 1 did not produce completed checkpoint ${completed_checkpoint}" >&2
+    exit 1
+fi
 
 echo "Phase 2: resume through step ${total_steps} with ${second_phase_gpus} GPU(s)"
 NGPU="${second_phase_gpus}" MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh \
     "${common_args[@]}" \
+    "${extra_args[@]}" \
     --training.steps "${total_steps}"
 
+final_checkpoint="${dump_folder}/checkpoint/step-${total_steps}"
+if [[ ! -f "${final_checkpoint}/.metadata" ]]; then
+    echo "Phase 2 did not produce completed checkpoint ${final_checkpoint}" >&2
+    exit 1
+fi
+
 echo "Zephon training checkpoint/resume smoke test passed: ${dump_folder}"
+echo "Restore evidence: phase 1 checkpoint ${completed_checkpoint}; phase 2 checkpoint ${final_checkpoint}"
