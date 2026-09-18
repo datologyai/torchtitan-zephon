@@ -45,58 +45,6 @@ class ZephonSource:
     weight: float = 1.0
 
 
-class _ZephonTokenizerAdapter:
-    """Expose TorchTitan's tokenizer through Zephon's tokenizer protocol."""
-
-    def __init__(self, tokenizer: BaseTokenizer) -> None:
-        self._tokenizer = tokenizer
-        self.name_or_path = getattr(tokenizer, "tokenizer_path", None)
-        self.bos_token_id = getattr(tokenizer, "bos_id", None)
-        self.eos_token_id = getattr(tokenizer, "eos_id", None)
-        self.pad_token_id = 0
-        self.bos_token = self.bos_token_id
-        self.eos_token = self.eos_token_id
-        self.pad_token = self.pad_token_id
-
-    def __deepcopy__(self, memo: dict[int, Any]) -> _ZephonTokenizerAdapter:
-        # Zephon preflight copies operators. Keep the TorchTitan-owned tokenizer
-        # instance intact; it can contain compiled templates that are not copyable.
-        del memo
-        return self
-
-    def __call__(
-        self, texts: Sequence[str] | str, **kwargs: Any
-    ) -> dict[str, list[int] | list[list[int]]]:
-        if kwargs.get("padding") not in (None, False):
-            raise ValueError("The Zephon integration does not use tokenizer padding")
-        if kwargs.get("return_tensors") is not None:
-            raise ValueError(
-                "The Zephon integration does not request tokenizer tensors"
-            )
-
-        single_input = isinstance(texts, str)
-        text_batch = [texts] if single_input else list(texts)
-        input_ids = [
-            self._tokenizer.encode(text, add_bos=False, add_eos=False)
-            for text in text_batch
-        ]
-        if kwargs.get("truncation"):
-            max_length = kwargs.get("max_length")
-            if not isinstance(max_length, int):
-                raise ValueError("Tokenizer truncation requires an integer max_length")
-            input_ids = [tokens[:max_length] for tokens in input_ids]
-
-        result: dict[str, list[int] | list[list[int]]] = {
-            "input_ids": input_ids[0] if single_input else input_ids
-        }
-        if kwargs.get("return_attention_mask", True):
-            attention_mask = [[1] * len(tokens) for tokens in input_ids]
-            result["attention_mask"] = (
-                attention_mask[0] if single_input else attention_mask
-            )
-        return result
-
-
 def _demo_sources() -> list[ZephonSource]:
     root = Path(__file__).resolve().parents[2] / "tests" / "assets" / "zephon_mixture"
     return [
@@ -271,13 +219,18 @@ class ZephonDataLoader(BaseDataLoader):
         if config.fetch_parallelism is not None:
             pipeline = pipeline.fetch_parallelism(config.fetch_parallelism)
 
+        tokenizer_path = getattr(tokenizer, "tokenizer_path", None)
+        if not isinstance(tokenizer_path, str) or not tokenizer_path:
+            raise ValueError("Zephon input requires a tokenizer with a tokenizer_path")
         pipeline = pipeline.tokenize(
-            tokenizer=_ZephonTokenizerAdapter(tokenizer),
+            tokenizer_id=tokenizer_path,
             field=config.text_field,
             add_attention_mask=False,
             max_length=max_context_length + 1,
             split_long_samples=True,
             special_tokens="bos_eos",
+            bos_token_id=tokenizer.bos_id,
+            eos_token_id=tokenizer.eos_id,
         )
         pipeline = pipeline.pack_flat(
             max_length=max_context_length + 1,

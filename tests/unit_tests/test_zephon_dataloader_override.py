@@ -317,31 +317,6 @@ def test_runtime_coordination_uses_all_checkpointing_ranks() -> None:
     assert "global_rank" not in pure_dp
 
 
-def test_tokenizer_adapter_reuses_torchtitan_tokenizer_instance() -> None:
-    from torchtitan.overrides.zephon_dataloader import _ZephonTokenizerAdapter
-
-    tokenizer = mock.Mock()
-    tokenizer.tokenizer_path = "/checked-in/tokenizer"
-    tokenizer.bos_id = 1
-    tokenizer.eos_id = 2
-    tokenizer.encode.side_effect = lambda text, **_: [len(text)]
-    adapter = _ZephonTokenizerAdapter(tokenizer)
-
-    assert adapter.name_or_path == tokenizer.tokenizer_path
-    assert adapter(["one", "three"], add_special_tokens=False) == {
-        "input_ids": [[3], [5]],
-        "attention_mask": [[1], [1]],
-    }
-    assert [call.args[0] for call in tokenizer.encode.call_args_list] == [
-        "one",
-        "three",
-    ]
-    assert all(
-        call.kwargs == {"add_bos": False, "add_eos": False}
-        for call in tokenizer.encode.call_args_list
-    )
-
-
 @pytest.mark.parametrize("topology", ["2-to-1", "1-to-2"])
 def test_cpu_elastic_resume_directions(tmp_path: Path, topology: str) -> None:
     pytest.importorskip("zephon")

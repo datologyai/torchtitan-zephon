@@ -141,8 +141,8 @@ reaches that bound, matching the stock loader's validation semantics.
 
 ## Temporary constraints
 
-- Online mode adapts the tokenizer instance already built by TorchTitan to
-  Zephon's tokenizer protocol; it does not rebuild or download a tokenizer.
+- Online mode passes TorchTitan's validated tokenizer path and special-token
+  IDs to Zephon. Zephon loads its own tokenizer instance for pipeline execution.
 - `dataloader.max_num_documents` is rejected until Zephon supports the
   corresponding contract; it is never silently ignored.
 - Zephon checkpoint state is opaque bytes inside TorchTitan DCP.
