@@ -99,14 +99,20 @@ class FaultTolerantTrainer(Trainer):
         num_pp_microbatches = (
             config.parallelism.num_pp_microbatches if parallel_dims.pp_enabled else 1
         )
-        # build dataloader
         num_tokens_per_batch = config.training.num_tokens_per_microbatch_per_dp_rank
+        num_tokens_per_train_step = config.training.num_tokens_per_train_step
+        if num_tokens_per_train_step < 0:
+            num_tokens_per_train_step = (
+                num_tokens_per_batch * num_pp_microbatches * batch_degree
+            )
+        # build dataloader
         self.dataloader = config.dataloader.build(
             dp_world_size=batch_degree,
             dp_rank=batch_rank,
             tokenizer=self.tokenizer,
             max_context_length=config.training.max_context_length,
             num_tokens_per_batch=num_tokens_per_batch,
+            num_tokens_per_train_step=num_tokens_per_train_step,
         )
 
         # build model (using meta init)
@@ -181,9 +187,6 @@ class FaultTolerantTrainer(Trainer):
             config.training.num_tokens_per_microbatch_per_dp_rank
             * self.num_pp_microbatches
         )
-        num_tokens_per_train_step = config.training.num_tokens_per_train_step
-        if num_tokens_per_train_step < 0:
-            num_tokens_per_train_step = num_tokens_per_dp_rank * batch_degree
         if num_tokens_per_train_step % (num_tokens_per_dp_rank * batch_degree) != 0:
             raise ValueError(
                 "training.num_tokens_per_train_step "

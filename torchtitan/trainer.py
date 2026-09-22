@@ -635,6 +635,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful, Configurable):
             tokenizer=self.tokenizer,
             max_context_length=config.training.max_context_length,
             num_tokens_per_batch=num_tokens_per_batch,
+            num_tokens_per_train_step=num_tokens_per_train_step,
         )
 
         # build checkpointer

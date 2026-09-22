@@ -1,0 +1,16 @@
+# A separate, deterministic validation source for the local demo.
+# Relative paths are resolved from this recipe file.
+
+shuffle_shards = false
+shuffle_within_shard = false
+shuffle_block_size = "none"
+token_estimation = false
+shuffle_after_pack = false
+repeat = false
+text_field = "text"
+seed = 42
+chunk_size = 4
+
+[[sources]]
+name = "validation"
+path = "../../tests/assets/zephon_mixture/prose"
