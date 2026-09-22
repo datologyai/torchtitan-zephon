@@ -5,6 +5,9 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# End-to-end GPU smoke test: train, checkpoint the model and Zephon stream,
+# resume with a configurable GPU count, and complete one additional step.
+
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)

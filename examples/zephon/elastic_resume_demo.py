@@ -4,7 +4,11 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Demonstrate Zephon global-step preservation across DP topology changes."""
+"""Data-only demo of Zephon global-step preservation across DP changes.
+
+This intentionally does not construct or train a TorchTitan model. It compares
+the dataloader stream before and after an elastic checkpoint resume on CPUs.
+"""
 
 from __future__ import annotations
 
