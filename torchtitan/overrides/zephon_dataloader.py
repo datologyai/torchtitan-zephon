@@ -23,7 +23,7 @@ import tomllib
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypeGuard
 
 import torch
 import torch.distributed as dist
@@ -36,6 +36,76 @@ from torchtitan.config import derive, override
 
 TOKENS_FIELD = "input_ids"
 _SOURCE_FIELDS = frozenset({"name", "path", "fmt", "weight"})
+_PAD_TOKEN_CANDIDATES = ("<|finetune_right_pad_id|>", "<|pad|>", "<pad>", "[PAD]")
+
+
+def _resolve_pad_token_id(tokenizer: BaseTokenizer, pad_token_id: int | None) -> int:
+    """Choose an existing vocabulary ID; padding is masked by position."""
+    vocab_size = tokenizer.get_vocab_size()
+    eos_id = tokenizer.eos_id
+    raw_tokenizer = getattr(tokenizer, "tokenizer", None)
+    hf_config = getattr(tokenizer, "_hf_config", None) or {}
+
+    def token_id(token: str | dict | None) -> int | None:
+        if isinstance(token, dict):
+            token = token.get("content")
+        if token is None or raw_tokenizer is None:
+            return None
+        return raw_tokenizer.token_to_id(token)
+
+    declared_id = getattr(tokenizer, "pad_id", None)
+    if declared_id is None:
+        declared_id = token_id(hf_config.get("pad_token"))
+    if pad_token_id is not None:
+        if not 0 <= pad_token_id < vocab_size:
+            raise ValueError(
+                f"pad_token_id={pad_token_id} is out of vocab range [0, {vocab_size})"
+            )
+        if declared_id is not None and pad_token_id != declared_id:
+            raise ValueError(
+                f"pad_token_id={pad_token_id} contradicts the tokenizer's "
+                f"declared pad ID {declared_id}"
+            )
+        return pad_token_id
+    if declared_id is not None:
+        if not 0 <= declared_id < vocab_size:
+            raise ValueError(
+                f"Tokenizer pad ID {declared_id} is out of vocab range "
+                f"[0, {vocab_size})"
+            )
+        return declared_id
+
+    def usable(candidate: int | None) -> TypeGuard[int]:
+        return (
+            candidate is not None
+            and 0 <= candidate < vocab_size
+            and candidate != eos_id
+        )
+
+    for name in _PAD_TOKEN_CANDIDATES:
+        candidate = token_id(name)
+        if usable(candidate):
+            return candidate
+    reserved_id = min(
+        (
+            candidate
+            for token in hf_config.get("added_tokens_decoder", {}).values()
+            if token.get("special") and "reserved" in token.get("content", "").lower()
+            if usable(candidate := token_id(token))
+        ),
+        default=None,
+    )
+    if reserved_id is not None:
+        return reserved_id
+    unknown_id = token_id(hf_config.get("unk_token"))
+    if usable(unknown_id):
+        return unknown_id
+    if eos_id is not None and 0 <= eos_id < vocab_size:
+        return eos_id
+    raise ValueError(
+        "Could not resolve a pad token from the tokenizer's pad/reserved/unk "
+        "tokens or eos_id; set dataloader.pad_token_id"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +166,9 @@ def _load_data_config(data_config: str) -> dict[str, Any]:
     allowed_keys = {
         "sources",
         "text_field",
+        "max_num_documents",
+        "max_num_documents_scope",
+        "pad_token_id",
         "cache_dir",
         "cache_limit_bytes",
         "seed",
@@ -115,6 +188,7 @@ def _load_data_config(data_config: str) -> dict[str, Any]:
         "prefetch_buffer_size",
         "prefetch_parallelism",
         "tokenize_parallelism",
+        "tokenize_special_tokens",
         "pack_parallelism",
         "runner",
         "mtp_mode",
@@ -170,6 +244,16 @@ class ZephonDataLoader(BaseDataLoader):
         sources: list[ZephonSource] = field(default_factory=list)
         """Named local paths or ``hf://`` URIs with optional mixture weights."""
 
+        max_num_documents_scope: Literal["batch", "bin"] = "batch"
+        """Interpret max_num_documents per local token batch or per packed bin.
+
+        With B bins per batch, "batch" caps each bin at floor(limit / B),
+        which can pad more than Grain's shared batch budget. "bin" keeps packing
+        independent of batch size and reserves B * limit documents for attention.
+        """
+        pad_token_id: int | None = None
+        """Padding ID for capped packing; defaults to an existing tokenizer token."""
+
         text_field: str = "text"
         """Name of the text column shared by all configured sources."""
 
@@ -205,6 +289,10 @@ class ZephonDataLoader(BaseDataLoader):
         prefetch_buffer_size: int = 0
         prefetch_parallelism: int | None = None
         tokenize_parallelism: int | None = None
+        tokenize_special_tokens: Literal[
+            "bos_eos", "bos", "eos", "none", "tokenizer_default"
+        ] = "bos_eos"
+        """BOS/EOS policy for text; use "eos" for tokenizers without BOS."""
         pack_parallelism: int | None = None
         runner: str = "process"
         """Execution backend for pipeline stages."""
@@ -213,11 +301,9 @@ class ZephonDataLoader(BaseDataLoader):
         """Run the engine in a child process; None enables it automatically."""
 
         def __post_init__(self) -> None:
-            if self.max_num_documents is not None:
-                raise ValueError(
-                    "ZephonDataLoader does not yet support dataloader.max_num_documents"
-                )
             BaseDataLoader.Config.__post_init__(self)
+            if self.max_num_documents_scope not in ("batch", "bin"):
+                raise ValueError("max_num_documents_scope must be 'batch' or 'bin'")
 
     def __init__(
         self,
@@ -251,6 +337,23 @@ class ZephonDataLoader(BaseDataLoader):
                 "num_tokens_per_batch must be divisible by max_context_length"
             )
         local_batch_size = num_tokens_per_batch // max_context_length
+        max_sequences_per_bin = config.max_num_documents
+        self.max_num_documents = config.max_num_documents
+        if config.max_num_documents is not None:
+            if config.max_num_documents_scope == "batch":
+                max_sequences_per_bin = config.max_num_documents // local_batch_size
+                if max_sequences_per_bin == 0:
+                    raise ValueError(
+                        "max_num_documents must be at least the local batch size "
+                        f"({local_batch_size}) when max_num_documents_scope='batch'"
+                    )
+            else:
+                self.max_num_documents = config.max_num_documents * local_batch_size
+        pad_token_id = (
+            _resolve_pad_token_id(tokenizer, config.pad_token_id)
+            if max_sequences_per_bin is not None
+            else None
+        )
 
         datasets = [
             Dataset.from_path(name=source.name, path=source.path, fmt=source.fmt)
@@ -288,14 +391,24 @@ class ZephonDataLoader(BaseDataLoader):
             add_attention_mask=False,
             max_length=max_context_length + 1,
             split_long_samples=True,
-            special_tokens="bos_eos",
-            bos_token_id=tokenizer.bos_id,
-            eos_token_id=tokenizer.eos_id,
+            special_tokens=config.tokenize_special_tokens,
+            bos_token_id=(
+                tokenizer.bos_id
+                if config.tokenize_special_tokens in ("bos_eos", "bos")
+                else None
+            ),
+            eos_token_id=(
+                tokenizer.eos_id
+                if config.tokenize_special_tokens in ("bos_eos", "eos")
+                else None
+            ),
             parallelism=config.tokenize_parallelism,
         )
         pipeline = pipeline.pack_flat(
             max_length=max_context_length + 1,
             algorithm="wrap",
+            max_sequences_per_bin=max_sequences_per_bin,
+            pad_token_id=pad_token_id,
             emit_positions=True,
             parallelism=config.pack_parallelism,
         )
@@ -406,6 +519,7 @@ class ZephonDataLoader(BaseDataLoader):
             yield sample_batch.to_training(
                 tokens_field=TOKENS_FIELD,
                 return_labels=True,
+                return_padding_mask=True,
                 dtype=torch.long,
                 ignore_index=IGNORE_INDEX,
                 rename_fields={"input_ids": "input"},

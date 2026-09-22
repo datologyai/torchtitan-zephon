@@ -1,5 +1,6 @@
 # Temporary Git installation until Zephon has a suitable public PyPI release.
-zephon[hf] @ git+https://github.com/datologyai/zephon.git@main
+# Segment-count limits and input padding masks (datologyai/zephon#451).
+zephon[hf] @ git+https://github.com/datologyai/zephon.git@6a88882456a85a2411ab548ce923823ede6a7182
 transformers>=4.44.0
 # Transformers 5.15 accepts <=0.23.0, while TorchTitan otherwise permits newer.
 tokenizers>=0.22.0,<=0.23.0
