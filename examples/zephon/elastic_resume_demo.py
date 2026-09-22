@@ -1,4 +1,4 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
+# Copyright (c) DatologyAI
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -24,7 +24,7 @@ import sys
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
@@ -83,8 +83,8 @@ def _worker(args: argparse.Namespace) -> None:
 
     from torchtitan.components.tokenizer import HuggingFaceTokenizer
     from torchtitan.overrides.zephon_dataloader import (
-        _load_data_config,
         ZephonDataLoader,
+        _load_data_config,
     )
 
     dist.init_process_group("gloo")
@@ -99,6 +99,11 @@ def _worker(args: argparse.Namespace) -> None:
     config_values.update(
         aggregate_dir=str(args.output_dir / "aggregate"),
         run_id=args.run_id,
+        # Each data-only worker is already a short-lived torchrun subprocess.
+        # Keep this correctness demo single-process within each worker; the GPU
+        # smoke script exercises the process runner and automatic MTP default.
+        runner="inline",
+        mtp_mode=False,
     )
     loader = ZephonDataLoader(
         ZephonDataLoader.Config(**config_values),
@@ -109,9 +114,7 @@ def _worker(args: argparse.Namespace) -> None:
         ),
         max_context_length=args.max_context_length,
         num_tokens_per_batch=args.num_tokens_per_batch,
-        num_tokens_per_train_step=(
-            canonical_replicas * args.num_tokens_per_batch
-        ),
+        num_tokens_per_train_step=(canonical_replicas * args.num_tokens_per_batch),
     )
 
     if args.phase == "resume":

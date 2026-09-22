@@ -1,4 +1,4 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
+# Copyright (c) DatologyAI
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -32,6 +32,8 @@ from torchtitan.components.data.loader import BaseDataLoader, GrainDataLoader
 from torchtitan.components.loss import IGNORE_INDEX
 from torchtitan.components.tokenizer import BaseTokenizer
 from torchtitan.config import derive, override
+
+TOKENS_FIELD = "input_ids"
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,15 +174,24 @@ class ZephonDataLoader(BaseDataLoader):
         """Repeat indefinitely, or stop after every source completes a pass."""
 
         canonical_replicas: int | None = None
+        """Stable logical lane count used for elastic data-parallel resumes."""
+
         aggregate_dir: str | None = None
+        """Shared directory where distributed ranks aggregate lane state."""
+
         run_id: str | None = None
+        """Stable identifier for one checkpointable Zephon stream."""
+
         fetch_parallelism: int | None = None
         prefetch_buffer_size: int = 0
         prefetch_parallelism: int | None = None
         tokenize_parallelism: int | None = None
         pack_parallelism: int | None = None
         runner: str = "process"
+        """Execution backend for pipeline stages."""
+
         mtp_mode: bool | None = None
+        """Run the engine in a child process; None enables it automatically."""
 
         def __post_init__(self) -> None:
             if self.max_num_documents is not None:
@@ -275,8 +286,6 @@ class ZephonDataLoader(BaseDataLoader):
                 buffer_size=config.shuffle_buffer_size,
                 parallelism=config.shuffle_parallelism,
             )
-        pipeline.preflight_tokenizers()
-
         pipeline = pipeline.batch(local_batch_size, drop_last=True)
         self._pipeline = self._apply_runtime_options(
             pipeline,
@@ -284,7 +293,7 @@ class ZephonDataLoader(BaseDataLoader):
             dp_world_size=dp_world_size,
             dp_rank=dp_rank,
         )
-        self._tokens_field = "input_ids"
+        self._pipeline.preflight_tokenizers()
 
     @staticmethod
     def _validate_config(
@@ -376,7 +385,7 @@ class ZephonDataLoader(BaseDataLoader):
     def __iter__(self) -> Iterator[TrainerBatch]:
         for sample_batch in self._pipeline:
             yield sample_batch.to_training(
-                tokens_field=self._tokens_field,
+                tokens_field=TOKENS_FIELD,
                 return_labels=True,
                 dtype=torch.long,
                 ignore_index=IGNORE_INDEX,
@@ -431,7 +440,11 @@ def zephon_dataloader(
     aggregate_dir: str | None = None,
     run_id: str | None = None,
 ) -> ZephonDataLoader.Config:
-    """Replace the training loader with a recipe-defined Zephon stream."""
+    """Replace Grain training with a recipe-defined Zephon stream.
+
+    The override changes the dataloader type; it does not translate Grain's
+    dataset settings. Callers must provide ``data_config``.
+    """
     return _derive_zephon_config(
         config,
         data_config=data_config,
@@ -455,7 +468,7 @@ def zephon_validation_dataloader(
     aggregate_dir: str | None = None,
     run_id: str | None = None,
 ) -> ZephonDataLoader.Config:
-    """Replace the validation loader with a recipe-defined Zephon stream."""
+    """Replace Grain validation with a recipe-defined Zephon stream."""
     return _derive_zephon_config(
         config,
         data_config=data_config,
