@@ -21,7 +21,6 @@ import pickle
 import tomllib
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -77,15 +76,29 @@ def _load_data_config(data_config: str) -> dict[str, Any]:
 
     allowed_keys = {
         "sources",
-        "training",
         "text_field",
         "cache_dir",
+        "cache_limit_bytes",
         "seed",
         "chunk_size",
+        "shuffle_shards",
+        "shuffle_within_shard",
+        "shuffle_block_size",
+        "token_estimation",
+        "shuffle_after_pack",
+        "shuffle_buffer_size",
+        "shuffle_parallelism",
+        "repeat",
         "canonical_replicas",
         "aggregate_dir",
         "run_id",
         "fetch_parallelism",
+        "prefetch_buffer_size",
+        "prefetch_parallelism",
+        "tokenize_parallelism",
+        "pack_parallelism",
+        "runner",
+        "mtp_mode",
     }
     unknown_keys = set(values) - allowed_keys
     if unknown_keys:
@@ -140,12 +153,20 @@ class ZephonDataLoader(BaseDataLoader):
         """Name of the text column shared by all configured sources."""
 
         cache_dir: str | None = None
-        """Optional writable cache for all file-backed sources."""
+        """Optional writable cache for local and cloud-backed sources."""
+
+        cache_limit_bytes: int | None = None
+        """Maximum bytes retained in the on-disk shard cache."""
 
         seed: int = 42
-        chunk_size: int = 64
-        training: bool = True
-        """Enable training-time shuffling and token-aware mixture scheduling."""
+        chunk_size: int = 16_384
+        shuffle_shards: bool = True
+        shuffle_within_shard: bool = True
+        shuffle_block_size: int | str | None = "auto"
+        token_estimation: bool = True
+        shuffle_after_pack: bool = True
+        shuffle_buffer_size: int | None = None
+        shuffle_parallelism: int | None = None
 
         repeat: bool = True
         """Repeat indefinitely, or stop after every source completes a pass."""
@@ -154,6 +175,12 @@ class ZephonDataLoader(BaseDataLoader):
         aggregate_dir: str | None = None
         run_id: str | None = None
         fetch_parallelism: int | None = None
+        prefetch_buffer_size: int = 0
+        prefetch_parallelism: int | None = None
+        tokenize_parallelism: int | None = None
+        pack_parallelism: int | None = None
+        runner: str = "process"
+        mtp_mode: bool | None = None
 
         def __post_init__(self) -> None:
             if self.max_num_documents is not None:
@@ -199,23 +226,26 @@ class ZephonDataLoader(BaseDataLoader):
             Dataset.from_path(name=source.name, path=source.path, fmt=source.fmt)
             for source in config.sources
         ]
-        work_source_options: dict[str, Any] = {
-            "datasets": datasets,
-            "mixture": MixtureSpec(
+        work_source = StaticMixtureWorkSource(
+            datasets=datasets,
+            mixture=MixtureSpec(
                 {source.name: source.weight for source in config.sources}
             ),
-            "chunk_size": config.chunk_size,
-            "seed": config.seed,
-            "shuffle_shards": config.training,
-            "shuffle_within_shard": config.training,
-        }
-        if config.training:
-            work_source_options["token_estimation"] = TokenEstimation()
-        if config.repeat:
-            work_source_options["exhausted_policy"] = "repeat"
-        work_source = StaticMixtureWorkSource(**work_source_options)
+            chunk_size=config.chunk_size,
+            seed=config.seed,
+            shuffle_shards=config.shuffle_shards,
+            shuffle_within_shard=config.shuffle_within_shard,
+            shuffle_block_size=config.shuffle_block_size,
+            token_estimation=(TokenEstimation() if config.token_estimation else None),
+            exhausted_policy="repeat" if config.repeat else None,
+        )
 
         pipeline = Pipeline(work_source)
+        if config.prefetch_buffer_size:
+            pipeline = pipeline.prefetch(
+                buffer_size=config.prefetch_buffer_size,
+                parallelism=config.prefetch_parallelism,
+            )
         if config.fetch_parallelism is not None:
             pipeline = pipeline.fetch_parallelism(config.fetch_parallelism)
 
@@ -231,16 +261,28 @@ class ZephonDataLoader(BaseDataLoader):
             special_tokens="bos_eos",
             bos_token_id=tokenizer.bos_id,
             eos_token_id=tokenizer.eos_id,
+            parallelism=config.tokenize_parallelism,
         )
         pipeline = pipeline.pack_flat(
             max_length=max_context_length + 1,
             algorithm="wrap",
             emit_positions=True,
+            parallelism=config.pack_parallelism,
         )
+        if config.shuffle_after_pack:
+            pipeline = pipeline.shuffle(
+                seed=config.seed,
+                buffer_size=config.shuffle_buffer_size,
+                parallelism=config.shuffle_parallelism,
+            )
         pipeline.preflight_tokenizers()
 
-        self._pipeline = pipeline.batch(local_batch_size, drop_last=True).options(
-            **self._runtime_options(config, dp_world_size, dp_rank)
+        pipeline = pipeline.batch(local_batch_size, drop_last=True)
+        self._pipeline = self._apply_runtime_options(
+            pipeline,
+            config,
+            dp_world_size=dp_world_size,
+            dp_rank=dp_rank,
         )
         self._tokens_field = "input_ids"
 
@@ -253,57 +295,19 @@ class ZephonDataLoader(BaseDataLoader):
         num_tokens_per_batch: int | None = None,
         num_tokens_per_train_step: int | None = None,
     ) -> None:
-        if not isinstance(config.training, bool):
-            raise ValueError(  # noqa: TRY004
-                "dataloader.training must be true or false"
-            )
-        if not config.sources:
-            raise ValueError("dataloader.sources must not be empty")
-        source_names = [source.name for source in config.sources]
-        if any(not name for name in source_names):
-            raise ValueError("dataloader.sources names must not be empty")
-        if len(set(source_names)) != len(source_names):
-            raise ValueError("dataloader.sources names must be unique")
-        if any(not source.path for source in config.sources):
-            raise ValueError("dataloader.sources paths must not be empty")
-        if any(
-            not isinstance(source.weight, (int, float))
-            or not isfinite(source.weight)
-            or source.weight <= 0
-            for source in config.sources
-        ):
-            raise ValueError("dataloader.sources weights must all be positive")
-        if not config.text_field:
-            raise ValueError("dataloader.text_field must not be empty")
-        if config.cache_dir is not None and not config.cache_dir:
-            raise ValueError("dataloader.cache_dir must not be empty when set")
-        if config.chunk_size <= 0:
-            raise ValueError("dataloader.chunk_size must be positive")
-        if config.fetch_parallelism is not None and config.fetch_parallelism <= 0:
-            raise ValueError("dataloader.fetch_parallelism must be positive when set")
-        if config.canonical_replicas is not None and config.canonical_replicas <= 0:
-            raise ValueError("dataloader.canonical_replicas must be positive when set")
-        if config.aggregate_dir is not None and not config.aggregate_dir:
-            raise ValueError("dataloader.aggregate_dir must not be empty when set")
-        if config.run_id is not None and not config.run_id:
-            raise ValueError("dataloader.run_id must not be empty when set")
         canonical_replicas = (
             config.canonical_replicas
             if config.canonical_replicas is not None
             else dp_world_size
         )
-        if canonical_replicas < dp_world_size:
-            raise ValueError(
-                "dataloader.canonical_replicas must be at least the current "
-                "data-parallel world size"
-            )
-        if canonical_replicas % dp_world_size:
+        if canonical_replicas > 0 and canonical_replicas % dp_world_size:
             raise ValueError(
                 "dataloader.canonical_replicas must be divisible by the current "
                 "data-parallel world size so every rank owns the same number of lanes"
             )
         if (
-            num_tokens_per_train_step is not None
+            canonical_replicas > 0
+            and num_tokens_per_train_step is not None
             and num_tokens_per_batch is not None
         ):
             num_batches_per_step, remainder = divmod(
@@ -327,34 +331,47 @@ class ZephonDataLoader(BaseDataLoader):
             )
 
     @staticmethod
-    def _runtime_options(
-        config: Config, dp_world_size: int, dp_rank: int
-    ) -> dict[str, Any]:
-        options: dict[str, Any] = {
-            "deterministic": True,
-            "dp_degree": dp_world_size,
-            "dp_group_id": dp_rank,
-            "canonical_replicas": (
+    def _apply_runtime_options(
+        pipeline: Any,
+        config: Config,
+        *,
+        dp_world_size: int,
+        dp_rank: int,
+    ) -> Any:
+        from zephon.io import CacheOptions, StoreOptions
+
+        pipeline = pipeline.options(
+            runner=config.runner,
+            deterministic=True,
+            dp_degree=dp_world_size,
+            dp_group_id=dp_rank,
+            canonical_replicas=(
                 config.canonical_replicas
                 if config.canonical_replicas is not None
                 else dp_world_size
             ),
-        }
+            mtp_mode=config.mtp_mode if config.mtp_mode is not None else True,
+        )
         if config.cache_dir is not None:
-            options["io_options"] = {
-                "cache": {
-                    "enabled": True,
-                    "root": config.cache_dir,
-                }
-            }
+            pipeline = pipeline.options(
+                io_options=StoreOptions(
+                    cache=CacheOptions(
+                        enabled=True,
+                        root=config.cache_dir,
+                        limit_bytes=config.cache_limit_bytes,
+                    )
+                )
+            )
         if dist.is_initialized():
-            options["world_size"] = dist.get_world_size()
-            options["global_rank"] = dist.get_rank()
+            pipeline = pipeline.options(
+                world_size=dist.get_world_size(),
+                global_rank=dist.get_rank(),
+            )
         if config.aggregate_dir is not None:
-            options["aggregate_dir"] = config.aggregate_dir
+            pipeline = pipeline.options(aggregate_dir=config.aggregate_dir)
         if config.run_id is not None:
-            options["run_id"] = config.run_id
-        return options
+            pipeline = pipeline.options(run_id=config.run_id)
+        return pipeline
 
     def __iter__(self) -> Iterator[TrainerBatch]:
         for sample_batch in self._pipeline:
@@ -409,32 +426,18 @@ class ZephonDataLoader(BaseDataLoader):
 def zephon_dataloader(
     config: GrainDataLoader.Config,
     *,
-    data_config: str | None = None,
-    sources: list[Mapping[str, Any]] | None = None,
-    text_field: str | None = None,
-    cache_dir: str | None = None,
-    seed: int | None = None,
-    chunk_size: int | None = None,
+    data_config: str,
     canonical_replicas: int | None = None,
     aggregate_dir: str | None = None,
     run_id: str | None = None,
-    fetch_parallelism: int | None = None,
 ) -> ZephonDataLoader.Config:
-    """Replace the training loader with a shuffled, repeating Zephon stream."""
+    """Replace the training loader with a recipe-defined Zephon stream."""
     return _derive_zephon_config(
         config,
         data_config=data_config,
-        sources=sources,
-        text_field=text_field,
-        cache_dir=cache_dir,
-        seed=seed,
-        chunk_size=chunk_size,
         canonical_replicas=canonical_replicas,
         aggregate_dir=aggregate_dir,
         run_id=run_id,
-        fetch_parallelism=fetch_parallelism,
-        default_training=True,
-        repeat=True,
     )
 
 
@@ -447,71 +450,35 @@ def zephon_dataloader(
 def zephon_validation_dataloader(
     config: GrainDataLoader.Config,
     *,
-    data_config: str | None = None,
-    sources: list[Mapping[str, Any]] | None = None,
-    text_field: str | None = None,
-    cache_dir: str | None = None,
-    seed: int | None = None,
-    chunk_size: int | None = None,
+    data_config: str,
     canonical_replicas: int | None = None,
     aggregate_dir: str | None = None,
     run_id: str | None = None,
-    fetch_parallelism: int | None = None,
 ) -> ZephonDataLoader.Config:
-    """Replace the validation loader with an unshuffled Zephon stream."""
+    """Replace the validation loader with a recipe-defined Zephon stream."""
     return _derive_zephon_config(
         config,
         data_config=data_config,
-        sources=sources,
-        text_field=text_field,
-        cache_dir=cache_dir,
-        seed=seed,
-        chunk_size=chunk_size,
         canonical_replicas=canonical_replicas,
         aggregate_dir=aggregate_dir,
         run_id=run_id,
-        fetch_parallelism=fetch_parallelism,
-        default_training=False,
-        repeat=config.repeat,
     )
 
 
 def _derive_zephon_config(
     config: GrainDataLoader.Config,
     *,
-    data_config: str | None,
-    sources: list[Mapping[str, Any]] | None,
-    text_field: str | None,
-    cache_dir: str | None,
-    seed: int | None,
-    chunk_size: int | None,
+    data_config: str,
     canonical_replicas: int | None,
     aggregate_dir: str | None,
     run_id: str | None,
-    fetch_parallelism: int | None,
-    default_training: bool,
-    repeat: bool,
 ) -> ZephonDataLoader.Config:
-    deltas = {} if data_config is None else _load_data_config(data_config)
-    if sources is not None:
-        deltas["sources"] = _parse_sources(sources)
-    elif "sources" not in deltas:
-        raise ValueError(
-            "The Zephon override requires data_config or explicit sources; it does "
-            "not translate the existing Grain dataset configuration"
-        )
+    deltas = _load_data_config(data_config)
     for name, value in {
-        "text_field": text_field,
-        "cache_dir": cache_dir,
-        "seed": seed,
-        "chunk_size": chunk_size,
         "canonical_replicas": canonical_replicas,
         "aggregate_dir": aggregate_dir,
         "run_id": run_id,
-        "fetch_parallelism": fetch_parallelism,
     }.items():
         if value is not None:
             deltas[name] = value
-    deltas.setdefault("training", default_training)
-    deltas["repeat"] = repeat
     return derive(config, ZephonDataLoader.Config, **deltas)

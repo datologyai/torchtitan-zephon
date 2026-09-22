@@ -1,7 +1,11 @@
 # A separate, deterministic validation source for the local demo.
 # Relative paths are resolved from this recipe file.
 
-training = false
+shuffle_shards = false
+shuffle_within_shard = false
+token_estimation = false
+shuffle_after_pack = false
+repeat = false
 text_field = "text"
 seed = 42
 chunk_size = 4

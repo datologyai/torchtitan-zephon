@@ -8,7 +8,7 @@ import importlib
 import pickle
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from unittest import mock
 
@@ -20,10 +20,10 @@ from torchtitan.components.data.loader import BaseDataLoader, GrainDataLoader
 from torchtitan.components.loss import IGNORE_INDEX
 from torchtitan.components.tokenizer import HuggingFaceTokenizer
 from torchtitan.config import (
-    apply_overrides,
-    clear_overrides,
     Configurable,
     OverrideConfig,
+    apply_overrides,
+    clear_overrides,
 )
 from torchtitan.hf_datasets.text_datasets import DATASETS
 
@@ -92,7 +92,13 @@ def test_zephon_overrides_load_local_training_and_validation_recipes() -> None:
     from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
 
     assert isinstance(config.dataloader, ZephonDataLoader.Config)
-    assert config.dataloader.training
+    assert config.dataloader.shuffle_shards
+    assert config.dataloader.shuffle_within_shard
+    assert config.dataloader.shuffle_block_size == "auto"
+    assert config.dataloader.token_estimation
+    assert config.dataloader.shuffle_after_pack
+    assert config.dataloader.runner == "process"
+    assert config.dataloader.mtp_mode is None
     assert config.dataloader.repeat
     assert config.dataloader.chunk_size == 4
     assert [source.name for source in config.dataloader.sources] == ["prose", "code"]
@@ -101,36 +107,40 @@ def test_zephon_overrides_load_local_training_and_validation_recipes() -> None:
 
     validation = config.validator.dataloader
     assert isinstance(validation, ZephonDataLoader.Config)
-    assert not validation.training
+    assert not validation.shuffle_shards
+    assert not validation.shuffle_within_shard
+    assert validation.shuffle_block_size == "auto"
+    assert not validation.token_estimation
+    assert not validation.shuffle_after_pack
     assert not validation.repeat
     assert [source.name for source in validation.sources] == ["validation"]
 
 
 def test_zephon_configuration_rejects_unsupported_contracts(tmp_path: Path) -> None:
     from torchtitan.overrides.zephon_dataloader import (
-        zephon_dataloader,
         ZephonDataLoader,
         ZephonSource,
+        zephon_dataloader,
+        zephon_validation_dataloader,
     )
 
     with pytest.raises(ValueError, match="does not yet support.*max_num_documents"):
         ZephonDataLoader.Config(max_num_documents=4)
 
-    duplicate_sources = ZephonDataLoader.Config(
-        sources=[
-            ZephonSource(name="same", path="/data/one"),
-            ZephonSource(name="same", path="/data/two"),
-        ]
-    )
-    with pytest.raises(ValueError, match="names must be unique"):
-        ZephonDataLoader._validate_config(
-            duplicate_sources, dp_world_size=1, world_size=1
-        )
-
-    with pytest.raises(ValueError, match="requires data_config or explicit sources"):
+    with pytest.raises(TypeError, match="data_config"):
         zephon_dataloader(_grain_config())
 
     source = ZephonSource(name="source", path="/data/source")
+    # Zephon owns validation of its scalar options. The adapter only checks
+    # cross-system invariants after their Zephon prerequisites are valid.
+    ZephonDataLoader._validate_config(
+        ZephonDataLoader.Config(sources=[source], canonical_replicas=0),
+        dp_world_size=1,
+        world_size=1,
+        num_tokens_per_batch=32,
+        num_tokens_per_train_step=32,
+    )
+
     with pytest.raises(ValueError, match="divisible by.*data-parallel"):
         ZephonDataLoader._validate_config(
             ZephonDataLoader.Config(
@@ -159,6 +169,57 @@ def test_zephon_configuration_rejects_unsupported_contracts(tmp_path: Path) -> N
             world_size=2,
         )
 
+    tuned = ZephonDataLoader.Config(
+        sources=[source],
+        cache_dir="/cache",
+        cache_limit_bytes=1024,
+        shuffle_block_size="global",
+        prefetch_buffer_size=8,
+        prefetch_parallelism=2,
+        fetch_parallelism=3,
+        tokenize_parallelism=4,
+        pack_parallelism=5,
+        shuffle_buffer_size=128,
+        shuffle_parallelism=6,
+        runner="threads",
+        mtp_mode=False,
+    )
+    ZephonDataLoader._validate_config(tuned, dp_world_size=1, world_size=1)
+    pytest.importorskip("zephon")
+    pipeline = mock.Mock()
+    pipeline.options.return_value = pipeline
+    ZephonDataLoader._apply_runtime_options(
+        pipeline, tuned, dp_world_size=1, dp_rank=0
+    )
+    base_options = pipeline.options.call_args_list[0].kwargs
+    cache_options = pipeline.options.call_args_list[1].kwargs["io_options"]
+    assert base_options["runner"] == "threads"
+    assert not base_options["mtp_mode"]
+    assert cache_options.cache.limit_bytes == 1024
+
+    independent_recipe = tmp_path / "independent.toml"
+    independent_recipe.write_text(
+        """
+shuffle_shards = false
+shuffle_block_size = "global"
+token_estimation = true
+repeat = true
+
+[[sources]]
+name = "source"
+path = "/data/source"
+""".strip()
+    )
+    for recipe_override in (zephon_dataloader, zephon_validation_dataloader):
+        recipe_config = recipe_override(
+            _grain_config(), data_config=str(independent_recipe)
+        )
+        assert not recipe_config.shuffle_shards
+        assert recipe_config.shuffle_within_shard
+        assert recipe_config.shuffle_block_size == "global"
+        assert recipe_config.token_estimation
+        assert recipe_config.repeat
+
     recipe = tmp_path / "unknown.toml"
     recipe.write_text(
         """
@@ -174,14 +235,20 @@ def test_zephon_training_batches_and_checkpoint_continuation() -> None:
     pytest.importorskip("zephon")
 
     from torchtitan.overrides.zephon_dataloader import (
-        zephon_dataloader,
         ZephonDataLoader,
+        zephon_dataloader,
     )
 
     repo_root = Path(__file__).resolve().parents[2]
-    config = zephon_dataloader(
-        _grain_config(),
-        data_config=str(repo_root / "examples" / "zephon" / "local_jsonl.toml"),
+    config = replace(
+        zephon_dataloader(
+            _grain_config(),
+            data_config=str(
+                repo_root / "examples" / "zephon" / "local_jsonl.toml"
+            ),
+        ),
+        runner="inline",
+        mtp_mode=False,
     )
 
     def build_loader() -> ZephonDataLoader:
@@ -228,19 +295,23 @@ def test_zephon_validation_is_finite_without_token_estimation() -> None:
     pytest.importorskip("zephon")
 
     from torchtitan.overrides.zephon_dataloader import (
-        zephon_validation_dataloader,
         ZephonDataLoader,
+        zephon_validation_dataloader,
     )
 
     repo_root = Path(__file__).resolve().parents[2]
-    config = zephon_validation_dataloader(
-        GrainDataLoader.Config(
-            dataset=DATASETS["c4_validation"],
-            repeat=False,
+    config = replace(
+        zephon_validation_dataloader(
+            GrainDataLoader.Config(
+                dataset=DATASETS["c4_validation"],
+                repeat=False,
+            ),
+            data_config=str(
+                repo_root / "examples" / "zephon" / "validation_local_jsonl.toml"
+            ),
         ),
-        data_config=str(
-            repo_root / "examples" / "zephon" / "validation_local_jsonl.toml"
-        ),
+        runner="inline",
+        mtp_mode=False,
     )
     loader = ZephonDataLoader(
         config,
@@ -251,7 +322,8 @@ def test_zephon_validation_is_finite_without_token_estimation() -> None:
         num_tokens_per_batch=32,
     )
 
-    assert not config.training
+    assert not config.shuffle_shards
+    assert not config.token_estimation
     assert not config.repeat
     assert not loader._pipeline.ws.requires_token_priming
     assert list(loader)
@@ -273,6 +345,9 @@ def test_zephon_override_state_round_trips_through_dcp(tmp_path: Path) -> None:
     )
     importlib.import_module("torchtitan.overrides.zephon_dataloader")
     apply_overrides(override_config, root_config)
+    root_config.dataloader = replace(
+        root_config.dataloader, runner="inline", mtp_mode=False
+    )
     tokenizer = _tokenizer(repo_root)
 
     def build_loader() -> BaseDataLoader:
@@ -328,33 +403,45 @@ def test_zephon_checkpoint_rejects_missing_corrupt_and_incompatible_state() -> N
 
 
 def test_runtime_coordination_uses_all_checkpointing_ranks() -> None:
+    pytest.importorskip("zephon")
+
     from torchtitan.overrides.zephon_dataloader import ZephonDataLoader, ZephonSource
 
     zephon_module = importlib.import_module("torchtitan.overrides.zephon_dataloader")
     config = ZephonDataLoader.Config(
-        sources=[
-            ZephonSource(name="source", path="/data/source")
-        ],
+        sources=[ZephonSource(name="source", path="/data/source")],
         canonical_replicas=2,
     )
+    pipeline = mock.Mock()
+    pipeline.options.return_value = pipeline
     with (
         mock.patch.object(zephon_module.dist, "is_initialized", return_value=True),
         mock.patch.object(zephon_module.dist, "get_world_size", return_value=4),
         mock.patch.object(zephon_module.dist, "get_rank", return_value=3),
     ):
-        options = ZephonDataLoader._runtime_options(config, dp_world_size=2, dp_rank=1)
+        ZephonDataLoader._apply_runtime_options(
+            pipeline, config, dp_world_size=2, dp_rank=1
+        )
 
-    assert options["dp_degree"] == 2
-    assert options["dp_group_id"] == 1
-    assert options["world_size"] == 4
-    assert options["global_rank"] == 3
+    base_options = pipeline.options.call_args_list[0].kwargs
+    distributed_options = pipeline.options.call_args_list[1].kwargs
+    assert base_options["dp_degree"] == 2
+    assert base_options["dp_group_id"] == 1
+    assert distributed_options["world_size"] == 4
+    assert distributed_options["global_rank"] == 3
 
+    pipeline.reset_mock()
+    pipeline.options.return_value = pipeline
     with mock.patch.object(zephon_module.dist, "is_initialized", return_value=False):
-        pure_dp = ZephonDataLoader._runtime_options(config, dp_world_size=2, dp_rank=1)
-    assert pure_dp["dp_degree"] == 2
-    assert pure_dp["dp_group_id"] == 1
-    assert "world_size" not in pure_dp
-    assert "global_rank" not in pure_dp
+        ZephonDataLoader._apply_runtime_options(
+            pipeline, config, dp_world_size=2, dp_rank=1
+        )
+    assert pipeline.options.call_count == 1
+    pure_dp_options = pipeline.options.call_args.kwargs
+    assert pure_dp_options["dp_degree"] == 2
+    assert pure_dp_options["dp_group_id"] == 1
+    assert "world_size" not in pure_dp_options
+    assert "global_rank" not in pure_dp_options
 
 
 @pytest.mark.parametrize("topology", ["2-to-1", "1-to-2"])
