@@ -105,6 +105,9 @@ def _worker(args: argparse.Namespace) -> None:
         ),
         max_context_length=args.max_context_length,
         num_tokens_per_batch=args.num_tokens_per_batch,
+        num_tokens_per_train_step=(
+            canonical_replicas * args.num_tokens_per_batch
+        ),
     )
 
     if args.phase == "resume":

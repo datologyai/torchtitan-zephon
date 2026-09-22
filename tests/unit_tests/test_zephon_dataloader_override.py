@@ -123,7 +123,41 @@ def test_zephon_configuration_rejects_unsupported_contracts(tmp_path: Path) -> N
         ]
     )
     with pytest.raises(ValueError, match="names must be unique"):
-        ZephonDataLoader._validate_config(duplicate_sources, dp_world_size=1)
+        ZephonDataLoader._validate_config(
+            duplicate_sources, dp_world_size=1, world_size=1
+        )
+
+    with pytest.raises(ValueError, match="requires data_config or explicit sources"):
+        zephon_dataloader(_grain_config())
+
+    source = ZephonSource(name="source", path="/data/source")
+    with pytest.raises(ValueError, match="divisible by.*data-parallel"):
+        ZephonDataLoader._validate_config(
+            ZephonDataLoader.Config(
+                sources=[source],
+                canonical_replicas=3,
+                aggregate_dir="/tmp/aggregate",
+                run_id="run",
+            ),
+            dp_world_size=2,
+            world_size=2,
+        )
+
+    with pytest.raises(ValueError, match="complete lane-window boundaries"):
+        ZephonDataLoader._validate_config(
+            ZephonDataLoader.Config(sources=[source], canonical_replicas=2),
+            dp_world_size=1,
+            world_size=1,
+            num_tokens_per_batch=32,
+            num_tokens_per_train_step=32,
+        )
+
+    with pytest.raises(ValueError, match="Distributed Zephon runs require"):
+        ZephonDataLoader._validate_config(
+            ZephonDataLoader.Config(sources=[source]),
+            dp_world_size=1,
+            world_size=2,
+        )
 
     recipe = tmp_path / "unknown.toml"
     recipe.write_text(
@@ -158,6 +192,7 @@ def test_zephon_training_batches_and_checkpoint_continuation() -> None:
             tokenizer=_tokenizer(repo_root),
             max_context_length=16,
             num_tokens_per_batch=32,
+            num_tokens_per_train_step=32,
         )
 
     reference_iterator = iter(build_loader())
@@ -293,10 +328,15 @@ def test_zephon_checkpoint_rejects_missing_corrupt_and_incompatible_state() -> N
 
 
 def test_runtime_coordination_uses_all_checkpointing_ranks() -> None:
-    from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
+    from torchtitan.overrides.zephon_dataloader import ZephonDataLoader, ZephonSource
 
     zephon_module = importlib.import_module("torchtitan.overrides.zephon_dataloader")
-    config = ZephonDataLoader.Config(canonical_replicas=2)
+    config = ZephonDataLoader.Config(
+        sources=[
+            ZephonSource(name="source", path="/data/source")
+        ],
+        canonical_replicas=2,
+    )
     with (
         mock.patch.object(zephon_module.dist, "is_initialized", return_value=True),
         mock.patch.object(zephon_module.dist, "get_world_size", return_value=4),

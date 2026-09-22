@@ -45,14 +45,6 @@ class ZephonSource:
     weight: float = 1.0
 
 
-def _demo_sources() -> list[ZephonSource]:
-    root = Path(__file__).resolve().parents[2] / "tests" / "assets" / "zephon_mixture"
-    return [
-        ZephonSource(name="prose", path=str(root / "prose")),
-        ZephonSource(name="code", path=str(root / "code")),
-    ]
-
-
 def _parse_sources(sources: Sequence[Mapping[str, Any]]) -> list[ZephonSource]:
     parsed_sources = []
     for source in sources:
@@ -141,7 +133,7 @@ class ZephonDataLoader(BaseDataLoader):
 
     @dataclass(kw_only=True, slots=True)
     class Config(BaseDataLoader.Config):
-        sources: list[ZephonSource] = field(default_factory=_demo_sources)
+        sources: list[ZephonSource] = field(default_factory=list)
         """Named local paths or ``hf://`` URIs with optional mixture weights."""
 
         text_field: str = "text"
@@ -179,6 +171,7 @@ class ZephonDataLoader(BaseDataLoader):
         tokenizer: BaseTokenizer,
         max_context_length: int,
         num_tokens_per_batch: int,
+        num_tokens_per_train_step: int | None = None,
         **_: Any,
     ) -> None:
         (
@@ -188,7 +181,14 @@ class ZephonDataLoader(BaseDataLoader):
             StaticMixtureWorkSource,
             TokenEstimation,
         ) = _require_zephon()
-        self._validate_config(config, dp_world_size)
+        world_size = dist.get_world_size() if dist.is_initialized() else 1
+        self._validate_config(
+            config,
+            dp_world_size,
+            world_size,
+            num_tokens_per_batch=num_tokens_per_batch,
+            num_tokens_per_train_step=num_tokens_per_train_step,
+        )
         if num_tokens_per_batch % max_context_length:
             raise ValueError(
                 "num_tokens_per_batch must be divisible by max_context_length"
@@ -245,7 +245,14 @@ class ZephonDataLoader(BaseDataLoader):
         self._tokens_field = "input_ids"
 
     @staticmethod
-    def _validate_config(config: Config, dp_world_size: int) -> None:
+    def _validate_config(
+        config: Config,
+        dp_world_size: int,
+        world_size: int,
+        *,
+        num_tokens_per_batch: int | None = None,
+        num_tokens_per_train_step: int | None = None,
+    ) -> None:
         if not isinstance(config.training, bool):
             raise ValueError(  # noqa: TRY004
                 "dataloader.training must be true or false"
@@ -290,7 +297,30 @@ class ZephonDataLoader(BaseDataLoader):
                 "dataloader.canonical_replicas must be at least the current "
                 "data-parallel world size"
             )
-        if dp_world_size > 1 and (not config.aggregate_dir or not config.run_id):
+        if canonical_replicas % dp_world_size:
+            raise ValueError(
+                "dataloader.canonical_replicas must be divisible by the current "
+                "data-parallel world size so every rank owns the same number of lanes"
+            )
+        if (
+            num_tokens_per_train_step is not None
+            and num_tokens_per_batch is not None
+        ):
+            num_batches_per_step, remainder = divmod(
+                num_tokens_per_train_step, num_tokens_per_batch
+            )
+            if remainder:
+                raise ValueError(
+                    "num_tokens_per_train_step must be divisible by "
+                    "num_tokens_per_batch"
+                )
+            if num_batches_per_step % canonical_replicas:
+                raise ValueError(
+                    "The number of batches consumed per training step must be a "
+                    "multiple of dataloader.canonical_replicas so checkpoints land "
+                    "on complete lane-window boundaries"
+                )
+        if world_size > 1 and (not config.aggregate_dir or not config.run_id):
             raise ValueError(
                 "Distributed Zephon runs require dataloader.aggregate_dir and "
                 "dataloader.run_id so checkpoint() can aggregate lane state."
@@ -328,22 +358,16 @@ class ZephonDataLoader(BaseDataLoader):
 
     def __iter__(self) -> Iterator[TrainerBatch]:
         for sample_batch in self._pipeline:
-            converted_batch = sample_batch.to_training(
+            yield sample_batch.to_training(
                 tokens_field=self._tokens_field,
                 return_labels=True,
                 dtype=torch.long,
                 ignore_index=IGNORE_INDEX,
                 rename_fields={"input_ids": "input"},
+                flatten=True,
+                exclude_fields=("ids", "texts"),
+                return_num_valid_tokens=True,
             )
-            labels = converted_batch["labels"].reshape(-1)
-            training_batch = {
-                "input": converted_batch["input"].reshape(-1),
-                "labels": labels,
-                "num_valid_tokens": int((labels != IGNORE_INDEX).sum()),
-            }
-            if "positions" in converted_batch:
-                training_batch["positions"] = converted_batch["positions"].reshape(-1)
-            yield training_batch
 
     def state_dict(self) -> dict[str, bytes]:
         """Store the complete Zephon checkpoint as one DCP-safe opaque value."""
@@ -472,7 +496,10 @@ def _derive_zephon_config(
     if sources is not None:
         deltas["sources"] = _parse_sources(sources)
     elif "sources" not in deltas:
-        deltas["sources"] = _demo_sources()
+        raise ValueError(
+            "The Zephon override requires data_config or explicit sources; it does "
+            "not translate the existing Grain dataset configuration"
+        )
     for name, value in {
         "text_field": text_field,
         "cache_dir": cache_dir,
