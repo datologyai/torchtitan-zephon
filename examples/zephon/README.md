@@ -22,10 +22,11 @@ The dependency currently resolves through the private `datologyai/zephon`
 repository and requires GitHub access. For active Zephon development, install
 a sibling checkout with `uv pip install -e /path/to/zephon`.
 
-## CPU data-only elastic demo
+## CPU data-only elastic determinism demo
 
-`elastic_resume_demo.py` tests the dataloader and its checkpoint without
-constructing or training a model:
+`elastic_resume_demo.py` tests that the dataloader stream remains deterministic
+across checkpoint/resume with a changed DP degree, without constructing or
+training a model:
 
 ```bash
 uv run --no-sync python examples/zephon/elastic_resume_demo.py
@@ -96,7 +97,8 @@ relative token proportions when `token_estimation = true`, which is the
 training default. The shuffling controls are independent:
 
 - `shuffle_shards` and `shuffle_within_shard` control source ordering.
-- `shuffle_block_size` accepts `"auto"`, `"global"`, or a positive integer.
+- `shuffle_block_size` accepts `"auto"`, `"global"`, `"none"`, or a positive
+  integer. `"none"` disables block shuffling.
 - `shuffle_after_pack` controls the pipeline shuffle over packed sequences.
 
 Shard prefetch is off by default. Set `prefetch_buffer_size` and optionally

@@ -109,7 +109,7 @@ def test_zephon_overrides_load_local_training_and_validation_recipes() -> None:
     assert isinstance(validation, ZephonDataLoader.Config)
     assert not validation.shuffle_shards
     assert not validation.shuffle_within_shard
-    assert validation.shuffle_block_size == "auto"
+    assert validation.shuffle_block_size is None
     assert not validation.token_estimation
     assert not validation.shuffle_after_pack
     assert not validation.repeat
@@ -229,6 +229,37 @@ sources = []
     )
     with pytest.raises(ValueError, match="unsupported_option"):
         zephon_dataloader(_grain_config(), data_config=str(recipe))
+
+
+@pytest.mark.parametrize(
+    ("sources", "error"),
+    [
+        (
+            [{"name": "source", "path": "/data/source", "wieght": 9.0}],
+            "Unknown Zephon source fields: wieght",
+        ),
+        (
+            [
+                {"name": "source", "path": "/data/one"},
+                {"name": "source", "path": "/data/two"},
+            ],
+            "Zephon source names must be unique",
+        ),
+        (
+            [{"name": "source", "path": "/data/source", "weight": float("nan")}],
+            "must have a finite weight",
+        ),
+        (
+            [{"name": "source", "path": "/data/source", "weight": float("inf")}],
+            "must have a finite weight",
+        ),
+    ],
+)
+def test_zephon_source_validation(sources: list[dict[str, object]], error: str) -> None:
+    from torchtitan.overrides.zephon_dataloader import _parse_sources
+
+    with pytest.raises(ValueError, match=error):
+        _parse_sources(sources)
 
 
 def test_zephon_training_batches_and_checkpoint_continuation() -> None:

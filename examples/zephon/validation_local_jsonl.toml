@@ -3,6 +3,7 @@
 
 shuffle_shards = false
 shuffle_within_shard = false
+shuffle_block_size = "none"
 token_estimation = false
 shuffle_after_pack = false
 repeat = false

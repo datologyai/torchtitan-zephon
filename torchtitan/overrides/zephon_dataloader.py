@@ -17,6 +17,7 @@ integration package, not in this illustrative override.
 
 from __future__ import annotations
 
+import math
 import pickle
 import tomllib
 from collections.abc import Iterator, Mapping, Sequence
@@ -34,6 +35,7 @@ from torchtitan.components.tokenizer import BaseTokenizer
 from torchtitan.config import derive, override
 
 TOKENS_FIELD = "input_ids"
+_SOURCE_FIELDS = frozenset({"name", "path", "fmt", "weight"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,20 +50,35 @@ class ZephonSource:
 
 def _parse_sources(sources: Sequence[Mapping[str, Any]]) -> list[ZephonSource]:
     parsed_sources = []
+    source_names = set()
     for source in sources:
+        unknown_fields = set(source) - _SOURCE_FIELDS
+        if unknown_fields:
+            raise ValueError(
+                "Unknown Zephon source fields: " + ", ".join(sorted(unknown_fields))
+            )
         try:
-            parsed_sources.append(
-                ZephonSource(
-                    name=source["name"],
-                    path=source["path"],
-                    fmt=source.get("fmt"),
-                    weight=source.get("weight", 1.0),
-                )
+            parsed_source = ZephonSource(
+                name=source["name"],
+                path=source["path"],
+                fmt=source.get("fmt"),
+                weight=float(source.get("weight", 1.0)),
             )
         except KeyError as exc:
             raise ValueError(
                 "Each Zephon source must contain 'name' and 'path' fields"
             ) from exc
+        if parsed_source.name in source_names:
+            raise ValueError(
+                f"Zephon source names must be unique; found {parsed_source.name!r} "
+                "more than once"
+            )
+        if not math.isfinite(parsed_source.weight):
+            raise ValueError(
+                f"Zephon source {parsed_source.name!r} must have a finite weight"
+            )
+        source_names.add(parsed_source.name)
+        parsed_sources.append(parsed_source)
     return parsed_sources
 
 
@@ -112,6 +129,8 @@ def _load_data_config(data_config: str) -> dict[str, Any]:
         raise ValueError(  # noqa: TRY004
             "Zephon data recipes must contain a 'sources' list"
         )
+    if values.get("shuffle_block_size") == "none":
+        values["shuffle_block_size"] = None
 
     recipe_dir = recipe_path.parent
     sources = _parse_sources(raw_sources)
