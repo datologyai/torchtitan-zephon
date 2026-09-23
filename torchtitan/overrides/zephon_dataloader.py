@@ -168,6 +168,8 @@ def _load_data_config(data_config: str) -> dict[str, Any]:
         "text_field",
         "max_num_documents",
         "max_num_documents_scope",
+        "pack_algorithm",
+        "pack_num_bins",
         "pad_token_id",
         "cache_dir",
         "cache_limit_bytes",
@@ -251,8 +253,14 @@ class ZephonDataLoader(BaseDataLoader):
         which can pad more than Grain's shared batch budget. "bin" keeps packing
         independent of batch size and reserves B * limit documents for attention.
         """
+        pack_algorithm: Literal[
+            "wrap", "first_fit", "best_fit", "best_fit_wrap"
+        ] = "wrap"
+        """Packing algorithm; only uncapped wrap drops its incomplete final bin."""
+        pack_num_bins: int | None = None
+        """Open bins for first_fit/best_fit (default 64); omit for wrapping algorithms."""
         pad_token_id: int | None = None
-        """Padding ID for capped packing; defaults to an existing tokenizer token."""
+        """Padding ID; inferred when packing can pad, unused for uncapped wrap."""
 
         text_field: str = "text"
         """Name of the text column shared by all configured sources."""
@@ -351,9 +359,12 @@ class ZephonDataLoader(BaseDataLoader):
                 self.max_num_documents = config.max_num_documents * local_batch_size
         pad_token_id = (
             _resolve_pad_token_id(tokenizer, config.pad_token_id)
-            if max_sequences_per_bin is not None
+            if config.pack_algorithm != "wrap" or max_sequences_per_bin is not None
             else None
         )
+        num_bins = config.pack_num_bins
+        if num_bins is None and config.pack_algorithm in ("first_fit", "best_fit"):
+            num_bins = 64
 
         datasets = [
             Dataset.from_path(name=source.name, path=source.path, fmt=source.fmt)
@@ -406,10 +417,12 @@ class ZephonDataLoader(BaseDataLoader):
         )
         pipeline = pipeline.pack_flat(
             max_length=max_context_length + 1,
-            algorithm="wrap",
+            algorithm=config.pack_algorithm,
+            num_bins=num_bins,
             max_sequences_per_bin=max_sequences_per_bin,
             pad_token_id=pad_token_id,
             emit_positions=True,
+            drop_oversized=False,
             parallelism=config.pack_parallelism,
         )
         if config.shuffle_after_pack:

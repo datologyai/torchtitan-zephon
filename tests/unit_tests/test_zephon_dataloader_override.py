@@ -211,6 +211,8 @@ max_num_documents = 5
 max_num_documents_scope = "bin"
 pad_token_id = 7
 tokenize_special_tokens = "eos"
+pack_algorithm = "best_fit"
+pack_num_bins = 4
 
 [[sources]]
 name = "source"
@@ -230,6 +232,8 @@ path = "/data/source"
         assert recipe_config.max_num_documents_scope == "bin"
         assert recipe_config.pad_token_id == 7
         assert recipe_config.tokenize_special_tokens == "eos"
+        assert recipe_config.pack_algorithm == "best_fit"
+        assert recipe_config.pack_num_bins == 4
 
     recipe = tmp_path / "unknown.toml"
     recipe.write_text(
@@ -276,8 +280,11 @@ def test_zephon_source_validation(sources: list[dict[str, object]], error: str) 
 @pytest.mark.parametrize(
     ("max_num_documents", "scope"), [(None, "batch"), (3, "batch"), (1, "bin")]
 )
+@pytest.mark.parametrize(
+    "algorithm", ["wrap", "first_fit", "best_fit", "best_fit_wrap"]
+)
 def test_zephon_training_batches_and_checkpoint_continuation(
-    max_num_documents: int | None, scope: str
+    max_num_documents: int | None, scope: str, algorithm: str
 ) -> None:
     pytest.importorskip("zephon")
 
@@ -296,6 +303,7 @@ def test_zephon_training_batches_and_checkpoint_continuation(
         mtp_mode=False,
         max_num_documents=max_num_documents,
         max_num_documents_scope=scope,
+        pack_algorithm=algorithm,
     )
 
     def build_loader() -> ZephonDataLoader:
@@ -341,13 +349,22 @@ def test_zephon_training_batches_and_checkpoint_continuation(
 
 
 @pytest.mark.parametrize(
-    ("scope", "limit", "per_bin", "per_batch"),
-    [("batch", 5, 2, 5), ("batch", 2, 1, 2), ("bin", 2, 2, 4), ("bin", 1, 1, 2)],
+    ("algorithm", "scope", "limit", "per_bin", "per_batch"),
+    [
+        ("wrap", "batch", 5, 2, 5),
+        ("wrap", "batch", 2, 1, 2),
+        ("wrap", "bin", 2, 2, 4),
+        ("wrap", "bin", 1, 1, 2),
+        ("first_fit", "batch", 5, 2, 5),
+        ("best_fit", "batch", 5, 2, 5),
+        ("best_fit_wrap", "batch", 5, 2, 5),
+    ],
 )
 @pytest.mark.parametrize("pad_with_eos", [False, True])
 @pytest.mark.parametrize("special_tokens", ["bos_eos", "eos"])
 def test_zephon_document_limit_and_attention_metadata(
     tmp_path: Path,
+    algorithm: str,
     scope: str,
     limit: int,
     per_bin: int,
@@ -379,6 +396,7 @@ def test_zephon_document_limit_and_attention_metadata(
             sources=[ZephonSource(name="documents", path=str(tmp_path), fmt="jsonl")],
             max_num_documents=limit,
             max_num_documents_scope=scope,
+            pack_algorithm=algorithm,
             tokenize_special_tokens=special_tokens,
             chunk_size=1,
             shuffle_shards=False,
@@ -399,7 +417,7 @@ def test_zephon_document_limit_and_attention_metadata(
     assert loader.max_num_documents == per_batch
     batches = list(loader)
     assert len(batches) > 1
-    first = batches[0]
+    first = next(batch for batch in batches if batch["padding_mask"].any())
     assert first["padding_mask"].any()
     assert (
         first["input"] == tokenizer.tokenizer.token_to_id(tokenizer.bos_token)
@@ -431,7 +449,13 @@ def test_zephon_document_limit_and_attention_metadata(
         assert metadata.cu_seq_q.tolist() == expected
         assert metadata.max_q == metadata.max_k == 16
         assert torch.diff(metadata.cu_seq_q).max() <= 16
-    assert ((first["positions"] == 0) & ~first["padding_mask"]).sum() == 2 * per_bin
+    assert (
+        max(
+            ((batch["positions"] == 0) & ~batch["padding_mask"]).sum().item()
+            for batch in batches
+        )
+        == 2 * per_bin
+    )
 
 
 def test_zephon_document_limit_rejects_less_than_one_document_per_bin() -> None:
@@ -449,6 +473,95 @@ def test_zephon_document_limit_rejects_less_than_one_document_per_bin() -> None:
             max_context_length=16,
             num_tokens_per_batch=32,
         )
+
+
+@pytest.fixture
+def short_document_loader(tmp_path: Path):
+    pytest.importorskip("zephon")
+
+    from torchtitan.overrides.zephon_dataloader import ZephonDataLoader, ZephonSource
+
+    (tmp_path / "documents.jsonl").write_text(json.dumps({"text": "hello"}) + "\n")
+    tokenizer = _tokenizer(Path(__file__).resolve().parents[2])
+
+    def build(**packing_options):
+        return ZephonDataLoader(
+            ZephonDataLoader.Config(
+                sources=[
+                    ZephonSource(name="documents", path=str(tmp_path), fmt="jsonl")
+                ],
+                chunk_size=1,
+                shuffle_shards=False,
+                shuffle_within_shard=False,
+                shuffle_block_size=None,
+                shuffle_after_pack=False,
+                token_estimation=False,
+                repeat=False,
+                runner="inline",
+                mtp_mode=False,
+                **packing_options,
+            ),
+            dp_world_size=1,
+            dp_rank=0,
+            tokenizer=tokenizer,
+            max_context_length=16,
+            num_tokens_per_batch=16,
+        )
+
+    return build, tokenizer
+
+
+@pytest.mark.parametrize(
+    "algorithm", ["wrap", "first_fit", "best_fit", "best_fit_wrap"]
+)
+def test_zephon_uncapped_packing_tail(short_document_loader, algorithm: str) -> None:
+    build, tokenizer = short_document_loader
+    batches = list(build(pack_algorithm=algorithm))
+    if algorithm == "wrap":
+        assert batches == []
+        return
+
+    assert len(batches) == 1
+    batch = batches[0]
+    tokens = tokenizer.encode("hello", add_bos=True, add_eos=True)
+    num_tokens = len(tokens)
+    pad_id = tokenizer.tokenizer.token_to_id(tokenizer._hf_config["pad_token"])
+    assert batch["input"].tolist() == tokens + [pad_id] * (16 - num_tokens)
+    assert batch["labels"].tolist() == tokens[1:] + [IGNORE_INDEX] * (17 - num_tokens)
+    assert batch["positions"].tolist() == list(range(num_tokens)) + list(
+        range(16 - num_tokens)
+    )
+    assert batch["padding_mask"].tolist() == [False] * num_tokens + [True] * (
+        16 - num_tokens
+    )
+    assert batch["num_valid_tokens"] == num_tokens - 1
+
+
+def test_zephon_uncapped_wrap_does_not_resolve_padding(short_document_loader) -> None:
+    build, _ = short_document_loader
+    with mock.patch(
+        "torchtitan.overrides.zephon_dataloader._resolve_pad_token_id",
+        side_effect=AssertionError("uncapped wrap does not need padding"),
+    ):
+        assert list(build()) == []
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "num_bins", "error"),
+    [
+        ("first_fit", 0, "num_bins must be positive"),
+        ("best_fit", -1, "num_bins must be positive"),
+        ("wrap", 2, "num_bins does not apply"),
+        ("best_fit_wrap", 2, "num_bins does not apply"),
+        ("invalid", None, "Unknown algorithm"),
+    ],
+)
+def test_zephon_packing_options_are_validated(
+    short_document_loader, algorithm: str, num_bins: int | None, error: str
+) -> None:
+    build, _ = short_document_loader
+    with pytest.raises(ValueError, match=error):
+        build(pack_algorithm=algorithm, pack_num_bins=num_bins)
 
 
 def _padding_tokenizer(vocab: list[str], config: dict) -> HuggingFaceTokenizer:
