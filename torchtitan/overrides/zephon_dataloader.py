@@ -309,6 +309,12 @@ class ZephonDataLoader(BaseDataLoader):
         """Run the engine in a child process; None enables it automatically."""
 
         def __post_init__(self) -> None:
+            for name in ("max_num_documents", "pack_num_bins", "pad_token_id"):
+                value = getattr(self, name)
+                if value is not None and (
+                    isinstance(value, bool) or not isinstance(value, int)
+                ):
+                    raise ValueError(f"{name} must be an integer or None")
             BaseDataLoader.Config.__post_init__(self)
             if self.max_num_documents_scope not in ("batch", "bin"):
                 raise ValueError("max_num_documents_scope must be 'batch' or 'bin'")

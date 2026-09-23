@@ -119,6 +119,47 @@ def test_zephon_overrides_load_local_training_and_validation_recipes() -> None:
     assert [source.name for source in validation.sources] == ["validation"]
 
 
+@pytest.mark.parametrize("name", ["max_num_documents", "pack_num_bins", "pad_token_id"])
+@pytest.mark.parametrize("value", [True, False, 2.0, 2.5, "2"])
+def test_zephon_numeric_config_rejects_non_integers(name: str, value: object) -> None:
+    from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
+
+    with pytest.raises(ValueError, match=f"{name} must be an integer or None"):
+        ZephonDataLoader.Config(**{name: value})
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [("max_num_documents", "2.5"), ("pack_num_bins", "true"), ("pad_token_id", '"2"')],
+)
+def test_zephon_recipe_rejects_non_integer_options(
+    tmp_path: Path, name: str, value: str
+) -> None:
+    from torchtitan.overrides.zephon_dataloader import zephon_dataloader
+
+    recipe = tmp_path / "invalid.toml"
+    recipe.write_text(f"{name} = {value}\nsources = []\n")
+    with pytest.raises(ValueError, match=f"{name} must be an integer or None"):
+        zephon_dataloader(_grain_config(), data_config=str(recipe))
+
+
+def test_zephon_numeric_config_accepts_integers_and_none() -> None:
+    from torchtitan.overrides.zephon_dataloader import ZephonDataLoader
+
+    defaults = ZephonDataLoader.Config()
+    assert defaults.max_num_documents is None
+    assert defaults.pack_num_bins is None
+    assert defaults.pad_token_id is None
+    config = ZephonDataLoader.Config(
+        max_num_documents=2, pack_algorithm="first_fit", pack_num_bins=1, pad_token_id=0
+    )
+    assert (config.max_num_documents, config.pack_num_bins, config.pad_token_id) == (
+        2,
+        1,
+        0,
+    )
+
+
 def test_zephon_configuration_rejects_unsupported_contracts(tmp_path: Path) -> None:
     from torchtitan.overrides.zephon_dataloader import (
         zephon_dataloader,
@@ -136,7 +177,7 @@ def test_zephon_configuration_rejects_unsupported_contracts(tmp_path: Path) -> N
         zephon_dataloader(_grain_config())
 
     source = ZephonSource(name="source", path="/data/source")
-    # Zephon owns validation of its scalar options. The adapter only checks
+    # Zephon owns range and algorithm compatibility checks. The adapter checks
     # cross-system invariants after their Zephon prerequisites are valid.
     ZephonDataLoader._validate_config(
         ZephonDataLoader.Config(sources=[source], canonical_replicas=0),
