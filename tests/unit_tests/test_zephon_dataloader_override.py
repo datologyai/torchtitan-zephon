@@ -287,12 +287,16 @@ sources = []
         zephon_dataloader(_grain_config(), data_config=str(recipe))
 
 
+# Deliberately misspelled "weight" to exercise unknown-field validation.
+_MISSPELLED_WEIGHT = "wieght"  # codespell:ignore
+
+
 @pytest.mark.parametrize(
     ("sources", "error"),
     [
         (
-            [{"name": "source", "path": "/data/source", "wieght": 9.0}],
-            "Unknown Zephon source fields: wieght",
+            [{"name": "source", "path": "/data/source", _MISSPELLED_WEIGHT: 9.0}],
+            f"Unknown Zephon source fields: {_MISSPELLED_WEIGHT}",
         ),
         (
             [
