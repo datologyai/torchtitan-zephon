@@ -57,7 +57,8 @@ jobs:
       - name: Lint all files
         if: github.event_name != 'pull_request'
         env:
-          SKIP: lychee-link-checker
+          # no-commit-to-branch always fails when linting a push to main.
+          SKIP: lychee-link-checker,no-commit-to-branch
         run: pre-commit run --show-diff-on-failure --all-files
       - name: Check links with Lychee
         env:
