@@ -267,8 +267,8 @@ class ZephonDataLoader(BaseDataLoader):
         cache_dir: str | None = None
         """Optional writable cache for local and cloud-backed sources."""
 
-        cache_limit_bytes: int | None = None
-        """Maximum bytes retained in the on-disk shard cache."""
+        cache_limit_bytes: int | str | None = None
+        """Maximum bytes retained in the on-disk shard cache, as an int or a size like "500gb"."""
 
         seed: int = 42
         chunk_size: int = 16_384
@@ -314,6 +314,13 @@ class ZephonDataLoader(BaseDataLoader):
                     isinstance(value, bool) or not isinstance(value, int)
                 ):
                     raise ValueError(f"{name} must be an integer or None")
+            if self.cache_limit_bytes is not None and (
+                isinstance(self.cache_limit_bytes, bool)
+                or not isinstance(self.cache_limit_bytes, (int, str))
+            ):
+                raise ValueError(
+                    "cache_limit_bytes must be an integer, a size string, or None"
+                )
             BaseDataLoader.Config.__post_init__(self)
             if self.max_num_documents_scope not in ("batch", "bin"):
                 raise ValueError("max_num_documents_scope must be 'batch' or 'bin'")
@@ -496,10 +503,13 @@ class ZephonDataLoader(BaseDataLoader):
         if config.cache_dir is not None:
             pipeline = pipeline.options(
                 io_options=StoreOptions(
-                    cache=CacheOptions(
-                        enabled=True,
-                        root=config.cache_dir,
-                        limit_bytes=config.cache_limit_bytes,
+                    # from_any parses size strings like "500gb" for limit_bytes.
+                    cache=CacheOptions.from_any(
+                        {
+                            "enabled": True,
+                            "root": config.cache_dir,
+                            "limit_bytes": config.cache_limit_bytes,
+                        }
                     )
                 )
             )

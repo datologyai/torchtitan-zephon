@@ -170,6 +170,41 @@ def test_zephon_numeric_config_accepts_integers_and_none() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("limit", "expected"),
+    [("500gb", 500 * 1024**3), ("1mb", 1024**2), (1024, 1024)],
+)
+def test_zephon_cache_limit_accepts_ints_and_size_strings(
+    limit: int | str, expected: int
+) -> None:
+    pytest.importorskip("zephon")
+    from torchtitan_recipes.zephon.dataloader import ZephonDataLoader, ZephonSource
+
+    config = ZephonDataLoader.Config(
+        sources=[ZephonSource(name="source", path="/data/source")],
+        cache_dir="/cache",
+        cache_limit_bytes=limit,
+    )
+    pipeline = mock.Mock()
+    pipeline.options.return_value = pipeline
+    ZephonDataLoader._apply_runtime_options(
+        pipeline, config, dp_world_size=1, dp_rank=0
+    )
+    cache_options = pipeline.options.call_args_list[1].kwargs["io_options"]
+    assert cache_options.cache.limit_bytes == expected
+
+
+@pytest.mark.parametrize("limit", [1.5, True, ["500gb"]])
+def test_zephon_cache_limit_rejects_other_types(limit: object) -> None:
+    from torchtitan_recipes.zephon.dataloader import ZephonDataLoader, ZephonSource
+
+    with pytest.raises(ValueError, match="cache_limit_bytes"):
+        ZephonDataLoader.Config(
+            sources=[ZephonSource(name="source", path="/data/source")],
+            cache_limit_bytes=limit,  # type: ignore[arg-type]
+        )
+
+
 def test_zephon_configuration_rejects_unsupported_contracts(tmp_path: Path) -> None:
     from torchtitan_recipes.zephon.dataloader import ZephonDataLoader, ZephonSource
 
