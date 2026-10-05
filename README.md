@@ -14,6 +14,14 @@
 
 </div>
 
+> [!NOTE]
+> **TorchTitan + Zephon reference integration:** This fork adds Zephon as a
+> training and validation dataloader that config recipes can select, leaving
+> the model and training stack intact. See the
+> [TorchTitan example](examples/zephon/README.md) and the
+> [Zephon User Guide](https://datologyai.github.io/zephon/). Zephon is currently
+> a private dependency and requires DatologyAI access.
+
 `torchtitan` is under extensive development. To use the latest features of `torchtitan`, we recommend using the most recent PyTorch nightly.
 
 

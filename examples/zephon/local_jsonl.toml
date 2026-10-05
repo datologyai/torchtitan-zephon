@@ -1,0 +1,18 @@
+# The common token-aware two-source recipe shared by the Zephon integrations.
+# Relative paths are resolved from this recipe file.
+
+text_field = "text"
+seed = 42
+chunk_size = 4
+
+[[sources]]
+name = "prose"
+path = "../../tests/assets/zephon_mixture/prose"
+fmt = "jsonl"
+weight = 3.0
+
+[[sources]]
+name = "code"
+path = "../../tests/assets/zephon_mixture/code"
+fmt = "jsonl"
+weight = 1.0

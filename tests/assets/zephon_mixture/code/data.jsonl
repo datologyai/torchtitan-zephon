@@ -1,0 +1,8 @@
+{"text":"def add(left, right):\n    return left + right"}
+{"text":"for epoch in range(num_epochs):\n    optimizer.step()"}
+{"text":"result = sorted(records, key=lambda record: record.identifier)"}
+{"text":"with open(path) as handle:\n    contents = handle.read()"}
+{"text":"tokens = tokenizer.encode(record[\"text\"])"}
+{"text":"mixture = MixtureSpec(source_weights)"}
+{"text":"checkpoint = pipeline.checkpoint()"}
+{"text":"for batch in dataloader:\n    trainer.step(batch)"}
