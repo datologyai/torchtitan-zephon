@@ -487,7 +487,6 @@ class ZephonDataLoader(BaseDataLoader):
         dp_rank: int,
     ) -> Any:
         from zephon.io import CacheOptions, StoreOptions
-        from zephon.io.options import parse_size_bytes
 
         pipeline = pipeline.options(
             runner=config.runner,
@@ -504,10 +503,13 @@ class ZephonDataLoader(BaseDataLoader):
         if config.cache_dir is not None:
             pipeline = pipeline.options(
                 io_options=StoreOptions(
-                    cache=CacheOptions(
-                        enabled=True,
-                        root=config.cache_dir,
-                        limit_bytes=parse_size_bytes(config.cache_limit_bytes),
+                    # from_any parses size strings like "500gb" for limit_bytes.
+                    cache=CacheOptions.from_any(
+                        {
+                            "enabled": True,
+                            "root": config.cache_dir,
+                            "limit_bytes": config.cache_limit_bytes,
+                        }
                     )
                 )
             )

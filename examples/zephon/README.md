@@ -78,7 +78,7 @@ source entries:
 ```toml
 text_field = "text"
 cache_dir = "/local-ssd/zephon"
-cache_limit_bytes = 536870912000
+cache_limit_bytes = "500gb"
 seed = 42
 chunk_size = 16384
 shuffle_block_size = "auto"
@@ -96,6 +96,10 @@ name = "code"
 path = "hf://organization/code/train"
 weight = 1.0
 ```
+
+`cache_limit_bytes` takes an integer byte count or a size string with a
+`tb`, `gb`, `mb`, `kb`, or `b` suffix. Units are binary, so `"500gb"` is
+500 * 1024^3 bytes.
 
 Relative paths are resolved from the data recipe's directory. Source weights are
 relative token proportions when `token_estimation = true`, which is the
