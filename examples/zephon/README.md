@@ -11,16 +11,15 @@ only the TorchTitan adapter and its runnable examples.
 
 ## Install
 
-Create a normal TorchTitan development environment, then install the current
-Zephon `main` branch used by this integration:
+Create a normal TorchTitan development environment, then install the Zephon
+release used by this integration from PyPI:
 
 ```bash
 uv pip install -r requirements-zephon.txt
 ```
 
-The dependency currently resolves through the private `datologyai/zephon`
-repository and requires GitHub access. For active Zephon development, install
-a sibling checkout with `uv pip install -e /path/to/zephon`.
+For active Zephon development, install a sibling checkout instead with
+`uv pip install -e /path/to/zephon`.
 
 ## CPU data-only elastic determinism demo
 
