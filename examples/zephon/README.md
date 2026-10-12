@@ -102,7 +102,8 @@ weight = 1.0
 
 Relative paths are resolved from the data recipe's directory. Source weights are
 relative token proportions when `token_estimation = true`, which is the
-training default. The shuffling controls are independent:
+default for recipes with more than one source; single-source recipes skip it. The
+shuffling controls are independent:
 
 - `shuffle_shards` and `shuffle_within_shard` control source ordering.
 - `shuffle_block_size` accepts `"auto"`, `"global"`, `"none"`, or a positive
@@ -111,10 +112,11 @@ training default. The shuffling controls are independent:
 
 Shard prefetch is off by default. Set `prefetch_buffer_size` and optionally
 `prefetch_parallelism` for remote datasets. `fetch_parallelism`,
-`tokenize_parallelism`, `pack_parallelism`, and `shuffle_parallelism` tune the
-individual stages. The default runner is `"process"`; MTP is enabled
-automatically for this tokenize-and-pack pipeline unless `mtp_mode` is set
-explicitly.
+`tokenize_parallelism`, `pack_parallelism`, and `shuffle_parallelism` set the
+worker processes per rank for each stage; the defaults (2 fetch, 3 tokenize,
+1 pack) assume several ranks share a node. The default runner is `"process"`;
+MTP is enabled automatically for this tokenize-and-pack pipeline unless
+`mtp_mode` is set explicitly.
 
 Validation should use a separate data recipe that explicitly selects its source,
 repetition, shuffling, and token-estimation behavior, as shown by
