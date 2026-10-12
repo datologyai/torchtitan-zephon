@@ -56,7 +56,7 @@ def test_zephon_from_toml_loads_local_training_and_validation_recipes() -> None:
     assert training.shuffle_shards
     assert training.shuffle_within_shard
     assert training.shuffle_block_size == "auto"
-    assert training.token_estimation
+    assert training.token_estimation is None
     assert training.shuffle_after_pack
     assert training.runner == "process"
     assert training.mtp_mode is None

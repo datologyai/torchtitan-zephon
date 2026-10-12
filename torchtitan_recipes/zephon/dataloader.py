@@ -276,7 +276,8 @@ class ZephonDataLoader(BaseDataLoader):
         shuffle_shards: bool = True
         shuffle_within_shard: bool = True
         shuffle_block_size: int | str | None = "auto"
-        token_estimation: bool = True
+        token_estimation: bool | None = None
+        """Token-aware mixing; None enables it only when there are several sources."""
         shuffle_after_pack: bool = True
         shuffle_buffer_size: int | None = None
         shuffle_parallelism: int | None = None
@@ -293,15 +294,16 @@ class ZephonDataLoader(BaseDataLoader):
         run_id: str | None = None
         """Stable identifier for one checkpointable Zephon stream."""
 
-        fetch_parallelism: int | None = None
+        # Worker defaults are per rank, sized for several ranks per node.
+        fetch_parallelism: int | None = 2
         prefetch_buffer_size: int = 0
         prefetch_parallelism: int | None = None
-        tokenize_parallelism: int | None = None
+        tokenize_parallelism: int | None = 3
         tokenize_special_tokens: Literal[
             "bos_eos", "bos", "eos", "none", "tokenizer_default"
         ] = "bos_eos"
         """BOS/EOS policy for text; use "eos" for tokenizers without BOS."""
-        pack_parallelism: int | None = None
+        pack_parallelism: int | None = 1
         runner: str = "process"
         """Execution backend for pipeline stages."""
 
@@ -387,6 +389,9 @@ class ZephonDataLoader(BaseDataLoader):
             Dataset.from_path(name=source.name, path=source.path, fmt=source.fmt)
             for source in config.sources
         ]
+        use_token_estimation = config.token_estimation
+        if use_token_estimation is None:
+            use_token_estimation = len(config.sources) > 1
         work_source = StaticMixtureWorkSource(
             datasets=datasets,
             mixture=MixtureSpec(
@@ -397,7 +402,7 @@ class ZephonDataLoader(BaseDataLoader):
             shuffle_shards=config.shuffle_shards,
             shuffle_within_shard=config.shuffle_within_shard,
             shuffle_block_size=config.shuffle_block_size,
-            token_estimation=(TokenEstimation() if config.token_estimation else None),
+            token_estimation=TokenEstimation() if use_token_estimation else None,
             exhausted_policy="repeat" if config.repeat else None,
         )
 
