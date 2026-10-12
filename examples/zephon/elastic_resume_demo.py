@@ -47,7 +47,7 @@ def _batch_state(batch: TokenizedTrainingMicrobatch) -> dict[str, Any]:
     return {
         "input": batch.input.tolist(),
         "positions": batch.positions.tolist(),
-        "num_valid_tokens": batch.num_valid_tokens,
+        "loss_token_counts": batch.loss_token_counts.item(),
         "labels": batch.labels.tolist(),
     }
 

@@ -538,14 +538,17 @@ class ZephonDataLoader(BaseDataLoader):
                     rename_fields={"input_ids": "input"},
                     flatten=True,
                     exclude_fields=("ids", "texts"),
-                    return_num_valid_tokens=True,
                 )
+                labels = microbatch["labels"]
+                padding_mask = microbatch["padding_mask"]
+                # One training objective and one routing depth (no MTP layers).
                 yield TokenizedTrainingMicrobatch(
                     input=microbatch["input"],
-                    labels=microbatch["labels"],
+                    labels=labels,
                     positions=microbatch["positions"],
-                    padding_mask=microbatch["padding_mask"],
-                    num_valid_tokens=microbatch["num_valid_tokens"],
+                    padding_mask=padding_mask,
+                    loss_token_counts=(labels != IGNORE_INDEX).sum(),
+                    routing_token_counts=(~padding_mask).sum().reshape(1),
                 )
         finally:
             # Also tear down when the consumer stops iterating without close().
