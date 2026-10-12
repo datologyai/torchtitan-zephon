@@ -491,7 +491,10 @@ def test_zephon_document_limit_and_attention_metadata(
         assert (real_starts <= per_bin).all()
         assert (batch.input[padding] == pad_id).all()
         assert (batch.labels[padding] == IGNORE_INDEX).all()
-        assert batch.loss_token_counts.item() == (batch.labels != IGNORE_INDEX).sum().item()
+        assert (
+            batch.loss_token_counts.item()
+            == (batch.labels != IGNORE_INDEX).sum().item()
+        )
         metadata = create_varlen_metadata_for_document(
             positions,
             padding_mask=padding,
