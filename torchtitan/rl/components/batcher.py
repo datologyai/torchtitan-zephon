@@ -16,16 +16,66 @@ from dataclasses import dataclass, replace
 
 import torch
 
+from torchtitan.components.data.types import TokenizedTrainingMicrobatch
+
 from torchtitan.config import Configurable
-from torchtitan.rl.observability import metrics as m
-from torchtitan.rl.types import (
-    TrainerStepBatch,
-    TrainingMicrobatch,
+from torchtitan.models.deepseek_v3.mtp import get_mtp_token_counts
+from torchtitan.rl.components.training_sample_builder import (
     TrainingSample,
     TrainingSampleGroup,
 )
+from torchtitan.rl.observability import metrics as m
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(kw_only=True, slots=True)
+class TrainingMicrobatch(TokenizedTrainingMicrobatch):
+    """Packed training microbatch for the RL trainer.
+
+    Each training_sample's raw tokens (length N) are split into
+    ``token_ids = raw[:-1]`` and ``labels = raw[1:]`` (both length
+    N-1), matching the pre-training dataloader convention.
+    """
+
+    generator_logprobs: torch.Tensor  # [T]
+    temperature: torch.Tensor  # [T]
+    loss_mask: torch.Tensor  # [T]
+    advantages: torch.Tensor  # [T]
+
+    def loss_kwargs(self) -> dict[str, torch.Tensor]:
+        return {
+            "generator_logprobs": self.generator_logprobs,
+            "temperature": self.temperature,
+            "loss_mask": self.loss_mask,
+            "advantages": self.advantages,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TrainerStepBatch:
+    """Packed microbatches for one optimizer step.
+
+    Example:
+        # 5 training samples, effective length 5 each; 2 rows/rank, dp_degree=1
+        # next-fit rows -> [[s5, s5], [s5, s5], [s5]] = 3 rows; rows_per_microbatch = 2 * 1 = 2
+        # -> 2 microbatches (3 rows padded to 4 with one pad-only row):
+        #    microbatches = [[TrainingMicrobatch(input=[20])],
+        #                    [TrainingMicrobatch(input=[20])]]
+        # The second microbatch contains one real row and one pad row.
+        # global_loss_token_counts = per-objective loss-token counts
+        # global_routing_token_counts = per-depth non-padding token counts
+    """
+
+    microbatches: list[list[TrainingMicrobatch]]  # [num_microbatches][dp_degree]
+    global_loss_token_counts: torch.Tensor
+    global_routing_token_counts: torch.Tensor
+    metrics: list[m.Metric]
+    group_ids: list[int]
+    """Every consumed rollout group, including metric-only groups."""
+    # one per packed training_sample; trainer computes policy_age at consume time
+    min_policy_versions: list[int]
+
 
 _MAX_CONSECUTIVE_UNTRAINABLE_BATCHES = 10
 
@@ -119,6 +169,8 @@ class Batcher(Configurable):
 
     @dataclass(kw_only=True, slots=True)
     class Config(Configurable.Config):
+        num_mtp_layers: int = 0
+        """Model-derived MTP depth used while preparing token counts."""
         per_sample_pad_multiple: int | None = None
         """When non-zero, pad each sample to a multiple of this value
         before packing. Used by flex attention in batch-invariant mode
@@ -131,6 +183,8 @@ class Batcher(Configurable):
         """
 
         def __post_init__(self) -> None:
+            if self.num_mtp_layers < 0:
+                raise ValueError("num_mtp_layers must be non-negative")
             if self.max_num_documents is not None and self.max_num_documents <= 0:
                 raise ValueError("max_num_documents must be positive")
 
@@ -160,6 +214,7 @@ class Batcher(Configurable):
         self._temperature = temperature
         self._per_sample_pad_multiple = config.per_sample_pad_multiple
         self._max_num_documents = config.max_num_documents
+        self._num_mtp_layers = config.num_mtp_layers
         self._num_prompts_per_train_step = num_prompts_per_train_step
         self._dp_degree = dp_degree
         self._groups_for_next_batch: list[TrainingSampleGroup] = []
@@ -247,6 +302,12 @@ class Batcher(Configurable):
             )
 
         group_is_trainable = bool(training_sample_group.training_samples)
+        # Keep every group, including groups made empty by rollout, builder, or
+        # batcher filtering. Empty groups do not count toward the trainable-group
+        # target, but they ride with the next training batch so its `group_ids`
+        # covers every terminal input. The controller acknowledges those IDs only
+        # at the optimizer/checkpoint boundary; dropping an empty group here would
+        # leave its dataloader entry pending forever.
         self._groups_for_next_batch.append(training_sample_group)
         self._record_untrainable_groups(group_is_trainable=group_is_trainable)
         num_trainable_groups = sum(
@@ -263,21 +324,30 @@ class Batcher(Configurable):
             metrics,
             num_rollout_groups,
             num_metric_only_groups,
+            group_ids,
         ) = self._take_groups()
         assignments = self._assign_training_samples_to_microbatches(training_samples)
         microbatches = [
             [self._pack_training_samples(samples) for samples in rank_assignments]
             for rank_assignments in assignments
         ]
-        num_global_valid_tokens = sum(
-            int(
-                (microbatch.loss_mask & torch.isfinite(microbatch.generator_logprobs))
-                .sum()
-                .item()
-            )
-            for rank_microbatches in microbatches
-            for microbatch in rank_microbatches
-        )
+        global_loss_token_counts: torch.Tensor | None = None
+        global_routing_token_counts: torch.Tensor | None = None
+        for rank_microbatches in microbatches:
+            for microbatch in rank_microbatches:
+                if global_loss_token_counts is None:
+                    global_loss_token_counts = torch.zeros_like(
+                        microbatch.loss_token_counts
+                    )
+                    global_routing_token_counts = torch.zeros_like(
+                        microbatch.routing_token_counts
+                    )
+                global_loss_token_counts.add_(microbatch.loss_token_counts)
+                assert global_routing_token_counts is not None
+                global_routing_token_counts.add_(microbatch.routing_token_counts)
+        assert global_loss_token_counts is not None
+        assert global_routing_token_counts is not None
+        num_global_loss_tokens = int(global_loss_token_counts.reshape(-1)[0].item())
         num_response_tokens = sum(
             int(microbatch.loss_mask.sum().item())
             for rank_microbatches in microbatches
@@ -285,7 +355,8 @@ class Batcher(Configurable):
         )
         return TrainerStepBatch(
             microbatches=microbatches,
-            num_global_valid_tokens=num_global_valid_tokens,
+            global_loss_token_counts=global_loss_token_counts,
+            global_routing_token_counts=global_routing_token_counts,
             metrics=[
                 *metrics,
                 # Keep this response-level metric exact without adding a second
@@ -293,7 +364,7 @@ class Batcher(Configurable):
                 m.Metric(
                     "loss/generator_logprob_nan_frac",
                     m.NoReduce(
-                        (num_response_tokens - num_global_valid_tokens)
+                        (num_response_tokens - num_global_loss_tokens)
                         / max(num_response_tokens, 1)
                     ),
                 ),
@@ -304,6 +375,7 @@ class Batcher(Configurable):
                     num_metric_only_groups,
                 ),
             ],
+            group_ids=group_ids,
             # Trainer computes policy_age from these at consume time (faithful to what it trains on).
             # min_policy_version is the oldest version this training_sample was sampled under.
             min_policy_versions=[
@@ -314,7 +386,7 @@ class Batcher(Configurable):
 
     def _take_groups(
         self,
-    ) -> tuple[list[TrainingSample], list[m.Metric], int, int]:
+    ) -> tuple[list[TrainingSample], list[m.Metric], int, int, list[int]]:
         """Pop accumulated groups oldest-first until `num_prompts_per_train_step` are taken."""
         taken_training_samples: list[TrainingSample] = []
         taken_metrics: list[m.Metric] = []
@@ -329,9 +401,10 @@ class Batcher(Configurable):
                 num_trainable_groups += 1
 
         # Pack in group-id order so on-policy runs stay reproducible whatever the finish order.
-        for group in sorted(
+        taken_groups = sorted(
             self._groups_for_next_batch[:cut], key=lambda taken: taken.group_id
-        ):
+        )
+        for group in taken_groups:
             taken_training_samples.extend(group.training_samples)
 
         # surplus carried over
@@ -343,6 +416,7 @@ class Batcher(Configurable):
             taken_metrics,
             num_trainable_groups,
             num_metric_only_groups,
+            [group.group_id for group in taken_groups],
         )
 
     def _assign_training_samples_to_microbatches(
@@ -681,10 +755,19 @@ class Batcher(Configurable):
             packed_fields["generator_logprobs"], dtype=_DTYPES["generator_logprobs"]
         )
         loss_mask = torch.tensor(packed_fields["loss_mask"], dtype=_DTYPES["loss_mask"])
+        target_mask = loss_mask & torch.isfinite(generator_logprobs)
+        positions_tensor = torch.tensor(positions, dtype=torch.long)
+        padding_mask_tensor = torch.tensor(padding_mask, dtype=torch.bool)
+        loss_token_counts, routing_token_counts = get_mtp_token_counts(
+            target_mask=target_mask,
+            positions=positions_tensor,
+            padding_mask=padding_mask_tensor,
+            num_mtp_layers=self._num_mtp_layers,
+        )
         return TrainingMicrobatch(
             input=torch.tensor(packed_fields["input_ids"], dtype=_DTYPES["input_ids"]),
             labels=torch.tensor(packed_fields["labels"], dtype=_DTYPES["labels"]),
-            positions=torch.tensor(positions, dtype=torch.long),
+            positions=positions_tensor,
             generator_logprobs=generator_logprobs,
             # TODO: support per-turn temperature: record it on each RolloutTurn and carry it
             # per token like generator_logprobs, instead of the run's sampling temperature.
@@ -693,10 +776,9 @@ class Batcher(Configurable):
             advantages=torch.tensor(
                 packed_fields["advantages"], dtype=_DTYPES["advantages"]
             ),
-            padding_mask=torch.tensor(padding_mask, dtype=torch.bool),
-            num_valid_tokens=int(
-                (loss_mask & torch.isfinite(generator_logprobs)).sum().item()
-            ),
+            padding_mask=padding_mask_tensor,
+            loss_token_counts=loss_token_counts,
+            routing_token_counts=routing_token_counts,
         )
 
     def _padding_fraction(

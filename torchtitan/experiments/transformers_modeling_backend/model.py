@@ -27,14 +27,14 @@ from torchtitan.config import TORCH_DTYPE_MAP, TrainingConfig
 from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.distributed.batch_invariant import is_in_batch_invariant_mode
 from torchtitan.distributed.parallelism_context import ParallelismContext
+from torchtitan.models.base.model import BaseModel
+from torchtitan.models.base.module import Module, ModuleDict
 from torchtitan.models.common.attention import (
     create_attention_mask,
     get_causal_mask_mod,
     get_document_mask_mod,
 )
-from torchtitan.models.utils import quadratic_attention_flops_per_token
-from torchtitan.protocols.model import BaseModel
-from torchtitan.protocols.module import Module, ModuleDict
+from torchtitan.models.common.flops import quadratic_attention_flops_per_token
 
 from .parallelize import parallelize_hf_transformers
 from .pipeline import pipeline_hf_transformers
@@ -173,7 +173,7 @@ def _get_moe_attr_name(layer: nn.Module) -> str | None:
 # routes attention through ``_flex_attention_torchtitan`` -- bypassing HF's
 # per-model ``_supports_flex_attn`` gate. A causal or document/packing BlockMask
 # is applied via the titan-built mask (is_causal alone cannot express
-# cross-sample masking); see ``get_attention_masks``.
+# cross-sample masking); see ``get_attention_metadata``.
 _ATTN_IMPLEMENTATION = "flex_torchtitan"
 
 
@@ -281,7 +281,7 @@ class HFTransformerModel(BaseModel):
             )
             self.sharding_config = None
             # HF modules run eager; the loss and the swapped-in TorchTitan MoE (SwiGLU) can compile.
-            self.local_compile_regions = ["loss", "swiglu"]
+            self.local_compile_regions = ["loss", "fused_binary_activation"]
 
             assert model_config is not None, "model_config is required"
 
@@ -382,7 +382,7 @@ class HFTransformerModel(BaseModel):
             Routes attention through the flex HOP so a causal or document/packing
             BlockMask can be applied -- is_causal alone cannot express
             cross-sample (packed)
-            masking. The titan-built BlockMask (see ``get_attention_masks``)
+            masking. The titan-built BlockMask (see ``get_attention_metadata``)
             rides HF's normal ``attention_mask`` argument (HF returns an
             already-4D/BlockMask mask as-is), so no custom mask plumbing is
             needed. The custom impl name only exists to bypass HF's per-model
@@ -584,11 +584,11 @@ class HFTransformerModel(BaseModel):
                             parameter_weights[id(param)] = Fraction(0)
 
             for layer in model.layers.values():
-                moe_config = getattr(layer, "_native_moe_config", None)
-                if moe_config is None:
+                moe_params = getattr(layer, "_native_moe_params", None)
+                if moe_params is None:
                     continue
                 active_expert_ratio = Fraction(
-                    moe_config.router.top_k, moe_config.num_experts
+                    moe_params["top_k"], moe_params["num_experts"]
                 )
                 if getattr(layer, "_layer_level_moe", False):
                     moe_block = layer
@@ -845,9 +845,9 @@ class HFTransformerModel(BaseModel):
                     layer._layer_level_moe = True
 
         if config.is_moe:
-            from .moe_replacement import prepare_native_moe_configs
+            from .moe_replacement import probe_native_moe_params
 
-            prepare_native_moe_configs(self, config)
+            probe_native_moe_params(self, config)
 
     def set_cp_mesh(self, mesh):
         self.cp_mesh = mesh
@@ -1220,19 +1220,19 @@ class HFTransformerModel(BaseModel):
         # Function-local import avoids a circular import.
         from torchtitan.distributed import context_parallel
         from torchtitan.distributed.spmd_types import annotate_input_spmd_types
-        from torchtitan.models.common.cp_attention import (
+        from torchtitan.models.common.attention.cp_attention import (
             KVAllGatherCPFlexInnerAttention,
         )
         from torchtitan.models.common.decoder_sharding import decoder_input_sharding
 
         input_shardings = decoder_input_sharding()
         input_dict.pop("padding_mask", None)
-        if "attention_masks" not in input_dict:
+        if "attention_metadata" not in input_dict:
             positions = input_dict.get("positions")
             if positions is not None:
-                masks = self.get_attention_masks(positions=positions)
+                masks = self.get_attention_metadata(positions=positions)
                 if masks is not None:
-                    input_dict["attention_masks"] = masks
+                    input_dict["attention_metadata"] = masks
 
         if parallelism_context.cp_enabled:
             load_balancer_config = parallelism.context_parallel_load_balancer
@@ -1241,7 +1241,7 @@ class HFTransformerModel(BaseModel):
                     seq_len=context_parallel.get_cp_input_seq_len(
                         input_dict, input_shardings=input_shardings
                     ),
-                    attention_metadata=input_dict.get("attention_masks"),
+                    attention_metadata=input_dict.get("attention_metadata"),
                 )
                 if load_balancer_config is not None
                 else None
@@ -1251,11 +1251,11 @@ class HFTransformerModel(BaseModel):
                 if load_balancer is not None
                 else None
             )
-            if "attention_masks" in input_dict:
+            if "attention_metadata" in input_dict:
                 input_dict[
-                    "attention_masks"
+                    "attention_metadata"
                 ] = KVAllGatherCPFlexInnerAttention.prepare_cp_metadata(
-                    input_dict["attention_masks"],
+                    input_dict["attention_metadata"],
                     permutation=permutation,
                 )
             input_dict = context_parallel.shard_tensors(
@@ -1276,7 +1276,7 @@ class HFTransformerModel(BaseModel):
         labels = input_dict.pop("labels")
         return inputs, labels, input_dict
 
-    def get_attention_masks(self, positions: torch.Tensor):
+    def get_attention_metadata(self, positions: torch.Tensor):
         """Build a flex BlockMask (causal or document-causal).
 
         ``forward`` (or the trainer under CP) calls this and passes the result
@@ -1340,7 +1340,7 @@ class HFTransformerModel(BaseModel):
 
     def forward(self, *args, **kwargs):
         positions = kwargs.pop("positions", None)
-        attention_masks = kwargs.pop("attention_masks", None)
+        attention_metadata = kwargs.pop("attention_metadata", None)
         model_args = (args[0].unsqueeze(0), *args[1:])
 
         if positions is not None:
@@ -1351,7 +1351,7 @@ class HFTransformerModel(BaseModel):
             # arange would use the wrong positions.
             #
             # The BlockMask is prebuilt in ``preprocess_inputs`` and passed
-            # in via ``attention_masks``.
+            # in via ``attention_metadata``.
             kwargs["position_ids"] = positions.unsqueeze(0)
         else:
             local_seq_len = args[0].shape[0]
@@ -1359,11 +1359,11 @@ class HFTransformerModel(BaseModel):
                 local_seq_len, device=args[0].device
             ).unsqueeze(0)
 
-        if attention_masks is not None:
+        if attention_metadata is not None:
             # HF returns an already-4D mask / BlockMask as-is (see
             # masking_utils._preprocess_mask_arguments), so the titan-built
             # BlockMask flows straight through to the flex attention function.
-            kwargs["attention_mask"] = attention_masks
+            kwargs["attention_mask"] = attention_metadata
 
         output = self.model.model(*model_args, **kwargs)
         hidden_states = output.last_hidden_state.squeeze(0)

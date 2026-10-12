@@ -32,6 +32,7 @@ from torchtitan.components.data.loader import BaseDataLoader
 from torchtitan.components.data.types import TokenizedTrainingMicrobatch
 from torchtitan.components.loss import IGNORE_INDEX
 from torchtitan.components.tokenizer import BaseTokenizer
+from torchtitan.models.deepseek_v3.mtp import get_mtp_token_counts
 
 TOKENS_FIELD = "input_ids"
 _SOURCE_FIELDS = frozenset({"name", "path", "fmt", "weight"})
@@ -362,6 +363,7 @@ class ZephonDataLoader(BaseDataLoader):
         local_batch_size = num_tokens_per_microbatch // max_context_length
         max_sequences_per_bin = config.max_num_documents
         self.max_num_documents = config.max_num_documents
+        self._num_mtp_layers = config.num_mtp_layers
         if config.max_num_documents is not None:
             if config.max_num_documents_scope == "batch":
                 max_sequences_per_bin = config.max_num_documents // local_batch_size
@@ -538,14 +540,26 @@ class ZephonDataLoader(BaseDataLoader):
                     rename_fields={"input_ids": "input"},
                     flatten=True,
                     exclude_fields=("ids", "texts"),
-                    return_num_valid_tokens=True,
                 )
+                labels = microbatch["labels"]
+                positions = microbatch["positions"]
+                padding_mask = microbatch["padding_mask"]
+                # Same counts as TorchTitan's stock token collator.
+                loss_token_counts, routing_token_counts = get_mtp_token_counts(
+                    target_mask=labels != IGNORE_INDEX,
+                    positions=positions,
+                    padding_mask=padding_mask,
+                    num_mtp_layers=self._num_mtp_layers,
+                )
+                if self._num_mtp_layers == 0:
+                    loss_token_counts = loss_token_counts[0]
                 yield TokenizedTrainingMicrobatch(
                     input=microbatch["input"],
-                    labels=microbatch["labels"],
-                    positions=microbatch["positions"],
-                    padding_mask=microbatch["padding_mask"],
-                    num_valid_tokens=microbatch["num_valid_tokens"],
+                    labels=labels,
+                    positions=positions,
+                    padding_mask=padding_mask,
+                    loss_token_counts=loss_token_counts,
+                    routing_token_counts=routing_token_counts,
                 )
         finally:
             # Also tear down when the consumer stops iterating without close().

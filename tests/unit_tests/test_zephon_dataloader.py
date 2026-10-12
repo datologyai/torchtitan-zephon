@@ -24,7 +24,7 @@ from torchtitan.components.data.loader import BaseDataLoader
 from torchtitan.components.data.types import TokenizedTrainingMicrobatch
 from torchtitan.components.loss import IGNORE_INDEX
 from torchtitan.components.tokenizer import HuggingFaceTokenizer
-from torchtitan.components.validate import iterate_and_close_dataloader
+from torchtitan.components.validator import iterate_and_close_dataloader
 
 
 def _assert_microbatches_equal(
@@ -393,7 +393,7 @@ def test_zephon_training_batches_and_checkpoint_continuation(
     assert first.padding_mask.dtype == torch.bool
     assert first.input.dtype == torch.long
     assert first.labels.dtype == torch.long
-    assert first.num_valid_tokens == int((first.labels != IGNORE_INDEX).sum())
+    assert int(first.loss_token_counts) == int((first.labels != IGNORE_INDEX).sum())
 
     restored_loader = build_loader()
     restored_loader.load_state_dict(loader.state_dict())
@@ -491,7 +491,10 @@ def test_zephon_document_limit_and_attention_metadata(
         assert (real_starts <= per_bin).all()
         assert (batch.input[padding] == pad_id).all()
         assert (batch.labels[padding] == IGNORE_INDEX).all()
-        assert batch.num_valid_tokens == (batch.labels != IGNORE_INDEX).sum().item()
+        assert (
+            batch.loss_token_counts.item()
+            == (batch.labels != IGNORE_INDEX).sum().item()
+        )
         metadata = create_varlen_metadata_for_document(
             positions,
             padding_mask=padding,
@@ -588,7 +591,7 @@ def test_zephon_uncapped_packing_tail(short_document_loader, algorithm: str) -> 
     assert batch.padding_mask.tolist() == [False] * num_tokens + [True] * (
         16 - num_tokens
     )
-    assert batch.num_valid_tokens == num_tokens - 1
+    assert batch.loss_token_counts.item() == num_tokens - 1
 
 
 def test_zephon_uncapped_wrap_does_not_resolve_padding(short_document_loader) -> None:

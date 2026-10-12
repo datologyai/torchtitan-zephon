@@ -39,10 +39,12 @@ from torchtitan.experiments.graph_trainer.configs import (
 )
 from torchtitan.experiments.graph_trainer.graph_builder import (
     GraphExecutionPlan,
-    GraphTrainerConfigView,
     GraphTrainerStageGraphProvider,
     ReduceGradPlacement,
     UnshardPlacement,
+)
+from torchtitan.experiments.graph_trainer.graph_builder_utils import (
+    GraphTrainerConfigView,
 )
 from torchtitan.experiments.graph_trainer.graph_pp.runner import (
     BACKWARD,
@@ -53,7 +55,7 @@ from torchtitan.experiments.graph_trainer.graph_pp.runner import (
 )
 from torchtitan.experiments.graph_trainer.graph_pp.stage import GraphPipelineStage
 from torchtitan.experiments.graph_trainer.registry import PASS_PIPELINE_REGISTRY
-from torchtitan.protocols.model import BaseModel
+from torchtitan.models.base.model import BaseModel
 
 
 if TYPE_CHECKING:
