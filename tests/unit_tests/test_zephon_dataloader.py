@@ -24,7 +24,7 @@ from torchtitan.components.data.loader import BaseDataLoader
 from torchtitan.components.data.types import TokenizedTrainingMicrobatch
 from torchtitan.components.loss import IGNORE_INDEX
 from torchtitan.components.tokenizer import HuggingFaceTokenizer
-from torchtitan.components.validate import iterate_and_close_dataloader
+from torchtitan.components.validator import iterate_and_close_dataloader
 
 
 def _assert_microbatches_equal(
