@@ -37,15 +37,16 @@ import torch
 import torch.nn.functional as F
 from huggingface_hub import snapshot_download
 from PIL import Image
-
-from torchtitan.hf_datasets.multimodal.utils.image import (
+from torchtitan.components.data.multimodal.utils.image import (
     process_image,
     resize_to_navit_patch_grid,
     vision_to_patches,
 )
+
+from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.models.common.activation import SiTUGLU
+from torchtitan.models.common.attention.kda import InnerKDA
 from torchtitan.models.kimi_k3 import build_model_config
-from torchtitan.models.kimi_k3.kda import InnerKDA
 from torchtitan.models.kimi_k3.model import KimiK3Model
 from torchtitan.models.kimi_k3.state_dict_adapter import KimiK3StateDictAdapter
 from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor
@@ -439,7 +440,7 @@ def run_tt(
         dtype=torch.int32,
         device=device,
     )
-    attention_masks = model.get_attention_masks(positions)
+    attention_metadata = model._get_attention_metadata(positions)
 
     print(
         f"tokens={tuple(tokens.shape)} pixel_values={tuple(pixel_values.shape)} "
@@ -472,7 +473,7 @@ def run_tt(
         grid_thw=grid_thw,
         special_tokens={"image_id": _MEDIA_TOKEN_ID},
         positions=positions,
-        attention_masks=attention_masks,
+        attention_metadata=attention_metadata,
     )
     _print_routing_comparison(ref["expert_indices"], expert_indices)
     return logits[-1].float().cpu()
@@ -531,7 +532,7 @@ def main() -> None:
     )
 
     tt_config = _use_released_vocab(
-        build_model_config(args.model_flavor),
+        build_model_config(args.model_flavor, parallelism=ParallelismConfig()),
         hf_model_path,
     )
     torch.manual_seed(args.seed)
