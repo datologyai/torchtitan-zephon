@@ -241,6 +241,26 @@ def test_zephon_configuration_rejects_unsupported_contracts(tmp_path: Path) -> N
             world_size=2,
         )
 
+    # A key-value store replaces the shared directory, but not both at once.
+    ZephonDataLoader._validate_config(
+        ZephonDataLoader.Config(
+            sources=[source], aggregate_store="torch://", run_id="run"
+        ),
+        dp_world_size=2,
+        world_size=2,
+    )
+    with pytest.raises(ValueError, match="at most one"):
+        ZephonDataLoader._validate_config(
+            ZephonDataLoader.Config(
+                sources=[source],
+                aggregate_dir="/tmp/aggregate",
+                aggregate_store="torch://",
+                run_id="run",
+            ),
+            dp_world_size=1,
+            world_size=1,
+        )
+
     tuned = ZephonDataLoader.Config(
         sources=[source],
         cache_dir="/cache",
@@ -266,6 +286,21 @@ def test_zephon_configuration_rejects_unsupported_contracts(tmp_path: Path) -> N
     assert base_options["runner"] == "threads"
     assert not base_options["mtp_mode"]
     assert cache_options.cache.limit_bytes == 1024
+
+    pipeline.reset_mock()
+    ZephonDataLoader._apply_runtime_options(
+        pipeline,
+        ZephonDataLoader.Config(
+            sources=[source], aggregate_store="torch://", run_id="run"
+        ),
+        dp_world_size=1,
+        dp_rank=0,
+    )
+    applied = {}
+    for call in pipeline.options.call_args_list:
+        applied.update(call.kwargs)
+    assert applied["aggregate_store"] == "torch://"
+    assert "aggregate_dir" not in applied
 
     independent_recipe = tmp_path / "independent.toml"
     independent_recipe.write_text(

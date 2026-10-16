@@ -8,7 +8,9 @@
 
 ``aggregate_dir`` and ``run_id`` identify one run rather than the recipe, so
 they come from the ``ZEPHON_AGGREGATE_DIR`` and ``ZEPHON_RUN_ID`` environment
-variables; ``examples/zephon/run_training_smoke.sh`` sets both.
+variables; ``examples/zephon/run_training_smoke.sh`` sets both. Set
+``ZEPHON_AGGREGATE_STORE`` (for example ``torch://``) instead of
+``ZEPHON_AGGREGATE_DIR`` to aggregate through a key-value store.
 
 The save and resume recipes differ only in ``training.steps``, following the
 paired ``*_save``/``*_load`` recipes in ``torchtitan_recipes.tests.suites``.
@@ -32,6 +34,7 @@ def llama3_debugmodel_zephon_smoke_save() -> Trainer.Config:
     config.dataloader = ZephonDataLoader.Config.from_toml(
         _DATA_CONFIG,
         aggregate_dir=os.environ.get("ZEPHON_AGGREGATE_DIR"),
+        aggregate_store=os.environ.get("ZEPHON_AGGREGATE_STORE"),
         run_id=os.environ.get("ZEPHON_RUN_ID"),
     )
     config.training.max_context_length = _MAX_CONTEXT_LENGTH
