@@ -296,7 +296,7 @@ class ZephonDataLoader(BaseDataLoader):
         """Key-value store URI for aggregating lane state, instead of aggregate_dir.
 
         "torch://" uses torchrun's TCPStore at MASTER_ADDR/MASTER_PORT;
-        "torch://host:port" names one explicitly.
+        a host and port such as "torch://10.0.0.1:29500" names one explicitly.
         """
 
         run_id: str | None = None
