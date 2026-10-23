@@ -91,10 +91,8 @@ def test_zephon_smoke_recipes_load_through_train_cli(
 
     repo_root = Path(__file__).resolve().parents[2]
     monkeypatch.chdir(repo_root)
-    aggregate_dir = str(tmp_path / "zephon-aggregate")
     # The environment and arguments run_training_smoke.sh uses for the resume
     # phase.
-    monkeypatch.setenv("ZEPHON_AGGREGATE_DIR", aggregate_dir)
     monkeypatch.setenv("ZEPHON_RUN_ID", "smoke")
     config = ConfigLoader().load(
         [
@@ -112,7 +110,8 @@ def test_zephon_smoke_recipes_load_through_train_cli(
 
     assert isinstance(config.dataloader, ZephonDataLoader.Config)
     assert config.dataloader.canonical_replicas == 2
-    assert config.dataloader.aggregate_dir == aggregate_dir
+    assert config.dataloader.aggregate_store == "torch://"
+    assert config.dataloader.aggregate_dir is None
     assert config.dataloader.run_id == "smoke"
     assert config.dump_folder == str(tmp_path)
     assert config.training.steps == 3
@@ -194,6 +193,25 @@ def test_zephon_cache_limit_accepts_ints_and_size_strings(
     assert cache_options.cache.limit_bytes == expected
 
 
+def test_zephon_aggregate_store_reaches_runtime_options() -> None:
+    from torchtitan_recipes.zephon.dataloader import ZephonDataLoader, ZephonSource
+
+    config = ZephonDataLoader.Config(
+        sources=[ZephonSource(name="source", path="/data/source")],
+        aggregate_store="torch://",
+        run_id="run",
+    )
+    pipeline = mock.Mock()
+    pipeline.options.return_value = pipeline
+    ZephonDataLoader._apply_runtime_options(
+        pipeline, config, dp_world_size=1, dp_rank=0
+    )
+    pipeline.options.assert_any_call(aggregate_store="torch://")
+    assert not any(
+        "aggregate_dir" in call.kwargs for call in pipeline.options.call_args_list
+    )
+
+
 @pytest.mark.parametrize("limit", [1.5, True, ["500gb"]])
 def test_zephon_cache_limit_rejects_other_types(limit: object) -> None:
     from torchtitan_recipes.zephon.dataloader import ZephonDataLoader, ZephonSource
@@ -240,6 +258,24 @@ def test_zephon_configuration_rejects_unsupported_contracts(tmp_path: Path) -> N
             dp_world_size=1,
             world_size=2,
         )
+    with pytest.raises(ValueError, match="at most one of"):
+        ZephonDataLoader._validate_config(
+            ZephonDataLoader.Config(
+                sources=[source],
+                aggregate_dir="/tmp/aggregate",
+                aggregate_store="torch://",
+                run_id="run",
+            ),
+            dp_world_size=1,
+            world_size=1,
+        )
+    ZephonDataLoader._validate_config(
+        ZephonDataLoader.Config(
+            sources=[source], aggregate_store="torch://", run_id="run"
+        ),
+        dp_world_size=2,
+        world_size=2,
+    )
 
     tuned = ZephonDataLoader.Config(
         sources=[source],

@@ -92,7 +92,7 @@ def _worker(args: argparse.Namespace) -> None:
 
     config = ZephonDataLoader.Config.from_toml(
         str(args.recipe),
-        aggregate_dir=str(args.output_dir / "aggregate"),
+        aggregate_store="torch://",
         run_id=args.run_id,
         # Each data-only worker is already a short-lived torchrun subprocess.
         # Keep this correctness demo single-process within each worker; the GPU

@@ -1,4 +1,4 @@
-zephon[hf,cloud]>=0.1.0,<0.2
+zephon[hf,cloud]>=0.2.0,<0.3
 transformers>=4.44.0
 # Transformers 5.15 accepts <=0.23.0, while TorchTitan otherwise permits newer.
 tokenizers>=0.22.0,<=0.23.0
