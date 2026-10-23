@@ -59,8 +59,9 @@ The trainer settings live in Python config recipes in
 `torchtitan_recipes/zephon/recipes.py`: each phase runs `${RECIPE}_save` or
 `${RECIPE}_resume`, and phase 2 loads the step-2 checkpoint with
 `--resume-step 2`. Ranks aggregate Zephon checkpoint state through
-torchrun's TCPStore (`aggregate_store="torch://"`), and the script passes the
-run's Zephon `run_id` to the recipes as `ZEPHON_RUN_ID`. For example, fixed TP=2 can be tested with:
+torchrun's TCPStore (`aggregate_store="torch://"`); set `ZEPHON_AGGREGATE_DIR`
+to aggregate through a shared directory instead. The script passes the run's
+Zephon `run_id` to the recipes as `ZEPHON_RUN_ID`. For example, fixed TP=2 can be tested with:
 
 ```bash
 FIRST_PHASE_GPUS=2 SECOND_PHASE_GPUS=2 RECIPE=llama3_debugmodel_zephon_smoke_tp2 \

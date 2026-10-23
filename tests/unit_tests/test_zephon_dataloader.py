@@ -93,6 +93,7 @@ def test_zephon_smoke_recipes_load_through_train_cli(
     monkeypatch.chdir(repo_root)
     # The environment and arguments run_training_smoke.sh uses for the resume
     # phase.
+    monkeypatch.delenv("ZEPHON_AGGREGATE_DIR", raising=False)
     monkeypatch.setenv("ZEPHON_RUN_ID", "smoke")
     config = ConfigLoader().load(
         [
@@ -126,6 +127,21 @@ def test_zephon_smoke_recipes_load_through_train_cli(
             training.num_tokens_per_microbatch_per_dp_rank * dp_degree
         )
         assert microbatches_per_rank % (2 // dp_degree) == 0
+
+
+def test_zephon_smoke_recipes_use_aggregate_dir_from_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    monkeypatch.chdir(repo_root)
+    aggregate_dir = str(tmp_path / "zephon-aggregate")
+    monkeypatch.setenv("ZEPHON_AGGREGATE_DIR", aggregate_dir)
+    monkeypatch.setenv("ZEPHON_RUN_ID", "smoke")
+    from torchtitan_recipes.zephon.recipes import llama3_debugmodel_zephon_smoke_save
+
+    dataloader = llama3_debugmodel_zephon_smoke_save().dataloader
+    assert dataloader.aggregate_dir == aggregate_dir
+    assert dataloader.aggregate_store is None
 
 
 @pytest.mark.parametrize("name", ["max_num_documents", "pack_num_bins", "pad_token_id"])

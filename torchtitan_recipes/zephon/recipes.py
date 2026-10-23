@@ -7,7 +7,8 @@
 """TorchTitan config recipes for the Zephon checkpoint/resume smoke test.
 
 Ranks aggregate Zephon checkpoint state through torchrun's TCPStore
-(``aggregate_store="torch://"``). ``run_id`` identifies one run rather than the
+(``aggregate_store="torch://"``) unless ``ZEPHON_AGGREGATE_DIR`` names a shared
+``aggregate_dir`` to use instead. ``run_id`` identifies one run rather than the
 recipe, so it comes from the ``ZEPHON_RUN_ID`` environment variable, which
 ``examples/zephon/run_training_smoke.sh`` sets.
 
@@ -30,9 +31,11 @@ _DATA_CONFIG = "examples/zephon/elastic_local_jsonl.toml"
 def llama3_debugmodel_zephon_smoke_save() -> Trainer.Config:
     """Train two steps and checkpoint every step, including the full last step."""
     config = llama3_debugmodel(seq_len=_MAX_CONTEXT_LENGTH)
+    aggregate_dir = os.environ.get("ZEPHON_AGGREGATE_DIR") or None
     config.dataloader = ZephonDataLoader.Config.from_toml(
         _DATA_CONFIG,
-        aggregate_store="torch://",
+        aggregate_dir=aggregate_dir,
+        aggregate_store=None if aggregate_dir else "torch://",
         run_id=os.environ.get("ZEPHON_RUN_ID"),
     )
     config.training.max_context_length = _MAX_CONTEXT_LENGTH
