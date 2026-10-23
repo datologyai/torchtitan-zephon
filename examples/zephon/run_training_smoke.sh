@@ -38,8 +38,9 @@ output_dir=$(mkdir -p "${output_dir}" && cd "${output_dir}" && pwd)
 
 cd "${repo_root}"
 
-# The recipes read the per-run Zephon settings from these.
-export ZEPHON_AGGREGATE_DIR="${output_dir}/zephon-aggregate"
+# The recipes read the per-run Zephon run ID from this. They aggregate
+# checkpoint state through torchrun's TCPStore unless ZEPHON_AGGREGATE_DIR names
+# a shared directory to use instead.
 export ZEPHON_RUN_ID="${run_id}"
 module=torchtitan_recipes.zephon.recipes
 

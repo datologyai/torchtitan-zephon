@@ -185,6 +185,7 @@ def _load_data_config(data_config: str) -> dict[str, Any]:
         "repeat",
         "canonical_replicas",
         "aggregate_dir",
+        "aggregate_store",
         "run_id",
         "fetch_parallelism",
         "prefetch_buffer_size",
@@ -290,6 +291,13 @@ class ZephonDataLoader(BaseDataLoader):
 
         aggregate_dir: str | None = None
         """Shared directory where distributed ranks aggregate lane state."""
+
+        aggregate_store: str | None = None
+        """Key-value store URI for aggregating lane state, instead of aggregate_dir.
+
+        "torch://" uses torchrun's TCPStore at MASTER_ADDR/MASTER_PORT;
+        a host and port such as "torch://10.0.0.1:29500" names one explicitly.
+        """
 
         run_id: str | None = None
         """Stable identifier for one checkpointable Zephon stream."""
@@ -479,10 +487,18 @@ class ZephonDataLoader(BaseDataLoader):
                 "dataloader.canonical_replicas must be divisible by the current "
                 "data-parallel world size so every rank owns the same number of lanes"
             )
-        if world_size > 1 and (not config.aggregate_dir or not config.run_id):
+        if config.aggregate_dir and config.aggregate_store:
             raise ValueError(
-                "Distributed Zephon runs require dataloader.aggregate_dir and "
-                "dataloader.run_id so checkpoint() can aggregate lane state."
+                "Set at most one of dataloader.aggregate_dir and "
+                "dataloader.aggregate_store."
+            )
+        if world_size > 1 and (
+            not (config.aggregate_dir or config.aggregate_store) or not config.run_id
+        ):
+            raise ValueError(
+                "Distributed Zephon runs require dataloader.aggregate_store (or "
+                "aggregate_dir) and dataloader.run_id so checkpoint() can "
+                "aggregate lane state."
             )
 
     @staticmethod
@@ -527,6 +543,8 @@ class ZephonDataLoader(BaseDataLoader):
             )
         if config.aggregate_dir is not None:
             pipeline = pipeline.options(aggregate_dir=config.aggregate_dir)
+        if config.aggregate_store is not None:
+            pipeline = pipeline.options(aggregate_store=config.aggregate_store)
         if config.run_id is not None:
             pipeline = pipeline.options(run_id=config.run_id)
         return pipeline

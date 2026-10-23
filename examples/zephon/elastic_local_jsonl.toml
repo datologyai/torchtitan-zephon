@@ -1,6 +1,6 @@
 # The common token-aware, two-canonical-lane recipe shared by the integrations.
-# Supply aggregate_dir and run_id at launch time because they identify a
-# particular shared run, not this reusable data recipe.
+# Supply aggregate_store (or aggregate_dir) and run_id at launch time because
+# they identify a particular shared run, not this reusable data recipe.
 
 text_field = "text"
 seed = 42

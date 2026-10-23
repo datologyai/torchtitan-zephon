@@ -58,9 +58,10 @@ FIRST_PHASE_GPUS=1 SECOND_PHASE_GPUS=1 \
 The trainer settings live in Python config recipes in
 `torchtitan_recipes/zephon/recipes.py`: each phase runs `${RECIPE}_save` or
 `${RECIPE}_resume`, and phase 2 loads the step-2 checkpoint with
-`--resume-step 2`. The script passes the run's Zephon `aggregate_dir` and
-`run_id` to the recipes as `ZEPHON_AGGREGATE_DIR` and `ZEPHON_RUN_ID`. For
-example, fixed TP=2 can be tested with:
+`--resume-step 2`. Ranks aggregate Zephon checkpoint state through
+torchrun's TCPStore (`aggregate_store="torch://"`); set `ZEPHON_AGGREGATE_DIR`
+to aggregate through a shared directory instead. The script passes the run's
+Zephon `run_id` to the recipes as `ZEPHON_RUN_ID`. For example, fixed TP=2 can be tested with:
 
 ```bash
 FIRST_PHASE_GPUS=2 SECOND_PHASE_GPUS=2 RECIPE=llama3_debugmodel_zephon_smoke_tp2 \
@@ -136,7 +137,7 @@ def llama3_8b_zephon():
     config = llama3_8b()
     config.dataloader = ZephonDataLoader.Config.from_toml(
         "/path/to/recipe.toml",
-        aggregate_dir="/shared/zephon/run-42",
+        aggregate_store="torch://",
         run_id="run-42",
     )
     # For a recipe that configures a validator:
@@ -151,9 +152,13 @@ python -m torchtitan.train --module my_package.recipes --config llama3_8b_zephon
 ```
 
 `from_toml` reads a Zephon data recipe; its keyword arguments set config
-fields on top of it. Elastic runs must keep the data recipe, tokenizer, seed,
-logical global batch, `canonical_replicas`, `aggregate_dir`, and `run_id`
-fixed, and the canonical lane count must be divisible by each supported DP
+fields on top of it. Distributed runs aggregate Zephon checkpoint state across
+ranks through either `aggregate_store` or `aggregate_dir` (set one):
+`aggregate_store="torch://"` uses the TCPStore that torchrun starts at
+`MASTER_ADDR`/`MASTER_PORT`, `"torch://host:port"` names a store explicitly,
+and `aggregate_dir` is a shared filesystem or cloud path. Elastic runs must
+keep the data recipe, tokenizer, seed, logical global batch,
+`canonical_replicas`, and `run_id` fixed, and the canonical lane count must be divisible by each supported DP
 degree. For the order within a global window to survive a DP change, every
 optimizer step should consume a whole number of canonical lane windows. A
 checkpoint taken mid-window still resumes without skipped or repeated
