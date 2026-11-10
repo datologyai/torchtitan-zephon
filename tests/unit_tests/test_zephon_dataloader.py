@@ -171,6 +171,26 @@ def test_zephon_smoke_recipes_validate_with_accelerator_graphs(
     config.__post_init__()
 
 
+@pytest.mark.parametrize("max_num_documents", [None, 4])
+def test_zephon_varlen_recipe_requires_document_cap_with_accelerator_graphs(
+    max_num_documents: int | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from torchtitan_recipes.tests.models.llama3 import llama3_debugmodel
+    from torchtitan_recipes.zephon.dataloader import ZephonDataLoader
+
+    monkeypatch.setattr(
+        "torchtitan.distributed.accelerator_graph.accelerator_graphs_supported",
+        lambda: True,
+    )
+    config = llama3_debugmodel(seq_len=128)
+    config.dataloader = ZephonDataLoader.Config(max_num_documents=max_num_documents)
+    if max_num_documents is None:
+        with pytest.raises(ValueError, match="max_num_documents is unset"):
+            config.__post_init__()
+    else:
+        config.__post_init__()
+
+
 @pytest.mark.parametrize("name", ["max_num_documents", "pack_num_bins", "pad_token_id"])
 @pytest.mark.parametrize("value", [True, False, 2.0, 2.5, "2"])
 def test_zephon_numeric_config_rejects_non_integers(name: str, value: object) -> None:
