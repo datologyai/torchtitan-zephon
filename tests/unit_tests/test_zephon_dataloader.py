@@ -445,13 +445,14 @@ def test_zephon_source_validation(sources: list[dict[str, object]], error: str) 
 
 
 @pytest.mark.parametrize(
-    ("max_num_documents", "scope"), [(None, "batch"), (3, "batch"), (1, "bin")]
+    ("max_num_documents", "scope", "local_batch_size"),
+    [(None, "batch", 2), (3, "batch", 2), (1, "bin", 1)],
 )
 @pytest.mark.parametrize(
     "algorithm", ["wrap", "first_fit", "best_fit", "best_fit_wrap"]
 )
 def test_zephon_training_batches_and_checkpoint_continuation(
-    max_num_documents: int | None, scope: str, algorithm: str
+    max_num_documents: int | None, scope: str, local_batch_size: int, algorithm: str
 ) -> None:
     pytest.importorskip("zephon")
 
@@ -474,7 +475,7 @@ def test_zephon_training_batches_and_checkpoint_continuation(
             dp_rank=0,
             tokenizer=_tokenizer(repo_root),
             max_context_length=16,
-            num_tokens_per_microbatch=32,
+            num_tokens_per_microbatch=16 * local_batch_size,
         )
 
     reference_iterator = iter(build_loader())
@@ -485,10 +486,10 @@ def test_zephon_training_batches_and_checkpoint_continuation(
     loader_iterator = iter(loader)
     first = next(loader_iterator)
     assert not loader._pipeline.ws.requires_token_priming
-    assert first.input.shape == (32,)
-    assert first.labels.shape == (32,)
-    assert first.positions.shape == (32,)
-    assert first.padding_mask.shape == (32,)
+    assert first.input.shape == (16 * local_batch_size,)
+    assert first.labels.shape == (16 * local_batch_size,)
+    assert first.positions.shape == (16 * local_batch_size,)
+    assert first.padding_mask.shape == (16 * local_batch_size,)
     assert first.padding_mask.dtype == torch.bool
     assert first.input.dtype == torch.long
     assert first.labels.dtype == torch.long
@@ -504,15 +505,16 @@ def test_zephon_training_batches_and_checkpoint_continuation(
 
 
 @pytest.mark.parametrize(
-    ("algorithm", "scope", "limit", "per_bin", "per_batch"),
+    ("algorithm", "scope", "limit", "per_bin", "local_batch_size"),
     [
-        ("wrap", "batch", 5, 2, 5),
+        ("wrap", "batch", 5, 2, 2),
+        ("wrap", "batch", 4, 2, 2),
         ("wrap", "batch", 2, 1, 2),
-        ("wrap", "bin", 2, 2, 4),
-        ("wrap", "bin", 1, 1, 2),
-        ("first_fit", "batch", 5, 2, 5),
-        ("best_fit", "batch", 5, 2, 5),
-        ("best_fit_wrap", "batch", 5, 2, 5),
+        ("wrap", "bin", 2, 2, 1),
+        ("wrap", "bin", 1, 1, 1),
+        ("first_fit", "batch", 5, 2, 2),
+        ("best_fit", "batch", 5, 2, 2),
+        ("best_fit_wrap", "batch", 5, 2, 2),
     ],
 )
 @pytest.mark.parametrize("pad_with_eos", [False, True])
@@ -523,7 +525,7 @@ def test_zephon_document_limit_and_attention_metadata(
     scope: str,
     limit: int,
     per_bin: int,
-    per_batch: int,
+    local_batch_size: int,
     pad_with_eos: bool,
     special_tokens: str,
 ) -> None:
@@ -546,30 +548,31 @@ def test_zephon_document_limit_and_attention_metadata(
             for text in ["hello"] * 12 + ["hello " * 30]
         )
     )
+    config = ZephonDataLoader.Config(
+        sources=[ZephonSource(name="documents", path=str(tmp_path), fmt="jsonl")],
+        max_num_documents=limit,
+        max_num_documents_scope=scope,
+        pack_algorithm=algorithm,
+        tokenize_special_tokens=special_tokens,
+        chunk_size=1,
+        shuffle_shards=False,
+        shuffle_within_shard=False,
+        shuffle_block_size=None,
+        shuffle_after_pack=False,
+        token_estimation=False,
+        repeat=False,
+        runner="inline",
+        mtp_mode=False,
+    )
+    num_tokens = 16 * local_batch_size
     loader = ZephonDataLoader(
-        ZephonDataLoader.Config(
-            sources=[ZephonSource(name="documents", path=str(tmp_path), fmt="jsonl")],
-            max_num_documents=limit,
-            max_num_documents_scope=scope,
-            pack_algorithm=algorithm,
-            tokenize_special_tokens=special_tokens,
-            chunk_size=1,
-            shuffle_shards=False,
-            shuffle_within_shard=False,
-            shuffle_block_size=None,
-            shuffle_after_pack=False,
-            token_estimation=False,
-            repeat=False,
-            runner="inline",
-            mtp_mode=False,
-        ),
+        config,
         dp_world_size=1,
         dp_rank=0,
         tokenizer=tokenizer,
         max_context_length=16,
-        num_tokens_per_microbatch=32,
+        num_tokens_per_microbatch=num_tokens,
     )
-    assert loader.max_num_documents == per_batch
     batches = list(loader)
     assert len(batches) > 1
     first = next(batch for batch in batches if batch.padding_mask.any())
@@ -585,8 +588,10 @@ def test_zephon_document_limit_and_attention_metadata(
     for batch in batches:
         positions = batch.positions
         padding = batch.padding_mask
-        assert positions.shape == padding.shape == (32,)
-        real_starts = ((positions == 0) & ~padding).reshape(2, 16).sum(dim=1)
+        assert positions.shape == padding.shape == (num_tokens,)
+        real_starts = (
+            ((positions == 0) & ~padding).reshape(local_batch_size, 16).sum(dim=1)
+        )
         assert (real_starts <= per_bin).all()
         assert (batch.input[padding] == pad_id).all()
         assert (batch.labels[padding] == IGNORE_INDEX).all()
@@ -597,11 +602,11 @@ def test_zephon_document_limit_and_attention_metadata(
         metadata = create_varlen_metadata_for_document(
             positions,
             padding_mask=padding,
-            max_num_documents=loader.max_num_documents,
+            max_num_documents=config.max_num_documents,
             max_context_length=16,
         )
         starts = (positions == 0).nonzero().flatten().tolist()
-        expected = starts + [32] * (per_batch + 3 - len(starts))
+        expected = starts + [num_tokens] * (limit + local_batch_size + 1 - len(starts))
         assert metadata.cu_seq_q.tolist() == expected
         assert metadata.max_q == metadata.max_k == 16
         assert torch.diff(metadata.cu_seq_q).max() <= 16
@@ -610,7 +615,7 @@ def test_zephon_document_limit_and_attention_metadata(
             ((batch.positions == 0) & ~batch.padding_mask).sum().item()
             for batch in batches
         )
-        == 2 * per_bin
+        == local_batch_size * per_bin
     )
 
 
@@ -618,7 +623,7 @@ def test_zephon_document_limit_and_attention_metadata(
 @pytest.mark.parametrize(
     "algorithm", ["wrap", "first_fit", "best_fit", "best_fit_wrap"]
 )
-def test_zephon_microbatches_match_stock_text_collator(
+def test_zephon_token_counts_and_model_inputs_match_stock_text_collator(
     num_mtp_layers: int, algorithm: str
 ) -> None:
     pytest.importorskip("zephon")
@@ -682,15 +687,31 @@ def test_zephon_microbatches_match_stock_text_collator(
         loader.close()
 
 
-def test_zephon_document_limit_rejects_less_than_one_document_per_bin() -> None:
+@pytest.mark.parametrize(
+    ("limit", "scope", "error"),
+    [
+        (1, "batch", "at least the local batch size.*2"),
+        (2, "bin", "max_num_documents_scope='batch'.*max_num_documents=4"),
+    ],
+)
+def test_zephon_document_limit_rejects_unsafe_microbatch_budgets(
+    limit: int, scope: str, error: str
+) -> None:
     pytest.importorskip("zephon")
 
     from torchtitan_recipes.zephon.dataloader import ZephonDataLoader
 
     repo_root = Path(__file__).resolve().parents[2]
-    with pytest.raises(ValueError, match="at least the local batch size.*2"):
+    config = ZephonDataLoader.Config.from_toml(
+        str(repo_root / "examples/zephon/local_jsonl.toml"),
+        max_num_documents=limit,
+        max_num_documents_scope=scope,
+        runner="inline",
+        mtp_mode=False,
+    )
+    with pytest.raises(ValueError, match=error):
         ZephonDataLoader(
-            ZephonDataLoader.Config(max_num_documents=1),
+            config,
             dp_world_size=1,
             dp_rank=0,
             tokenizer=_tokenizer(repo_root),

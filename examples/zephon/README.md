@@ -160,6 +160,13 @@ sequences per microbatch. Lower limits can add padding. To keep uncapped
 packing, use a FlexAttention model recipe, as the GPU smoke recipes do, or set
 `config.training.disable_accelerator_graphs = True`.
 
+Document limits use `max_num_documents_scope="batch"` by default. For two packed
+sequences with up to two documents each, use `max_num_documents=4`. A configured
+`max_num_documents_scope="bin"` limit is supported only with one packed sequence
+per microbatch; larger microbatches raise an error because TorchTitan reserves
+attention metadata from the config's limit before building the loader. This
+applies to both training and validation loaders.
+
 `from_toml` reads a Zephon data recipe; its keyword arguments set config
 fields on top of it. Distributed runs aggregate Zephon checkpoint state across
 ranks through either `aggregate_store` or `aggregate_dir` (set one):
