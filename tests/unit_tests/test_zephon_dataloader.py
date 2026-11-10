@@ -144,6 +144,33 @@ def test_zephon_smoke_recipes_use_aggregate_dir_from_env(
     assert dataloader.aggregate_store is None
 
 
+@pytest.mark.parametrize(
+    "recipe",
+    [
+        "llama3_debugmodel_zephon_smoke_save",
+        "llama3_debugmodel_zephon_smoke_resume",
+        "llama3_debugmodel_zephon_smoke_tp2_save",
+        "llama3_debugmodel_zephon_smoke_tp2_resume",
+    ],
+)
+def test_zephon_smoke_recipes_validate_with_accelerator_graphs(
+    recipe: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from torchtitan_recipes.zephon import recipes
+
+    monkeypatch.setattr(
+        "torchtitan.distributed.accelerator_graph.accelerator_graphs_supported",
+        lambda: True,
+    )
+    config = getattr(recipes, recipe)()
+    assert config.model.max_context_length == 128
+    assert config.dataloader.max_num_documents is None
+    assert not config.training.disable_accelerator_graphs
+    # Recipes replace the stock dataloader after Trainer.Config is built.
+    # Revalidate the final combination as the CLI does before training.
+    config.__post_init__()
+
+
 @pytest.mark.parametrize("name", ["max_num_documents", "pack_num_bins", "pad_token_id"])
 @pytest.mark.parametrize("value", [True, False, 2.0, 2.5, "2"])
 def test_zephon_numeric_config_rejects_non_integers(name: str, value: object) -> None:
@@ -565,6 +592,74 @@ def test_zephon_document_limit_and_attention_metadata(
         )
         == 2 * per_bin
     )
+
+
+@pytest.mark.parametrize("num_mtp_layers", [0, 1, 2])
+@pytest.mark.parametrize(
+    "algorithm", ["wrap", "first_fit", "best_fit", "best_fit_wrap"]
+)
+def test_zephon_microbatches_match_stock_text_collator(
+    num_mtp_layers: int, algorithm: str
+) -> None:
+    pytest.importorskip("zephon")
+    import grain.python as grain
+
+    from torchtitan.components.data.collators import TextCollator
+    from torchtitan.components.data.dataset import TextSequence
+    from torchtitan.components.data.types import DatasetBuildContext
+
+    from torchtitan_recipes.zephon.dataloader import ZephonDataLoader
+
+    repo_root = Path(__file__).resolve().parents[2]
+    tokenizer = _tokenizer(repo_root)
+    loader = ZephonDataLoader.Config.from_toml(
+        str(repo_root / "examples/zephon/local_jsonl.toml"),
+        runner="inline",
+        mtp_mode=False,
+        pack_algorithm=algorithm,
+        max_num_documents=4,
+        num_mtp_layers=num_mtp_layers,
+    ).build(
+        dp_world_size=1,
+        dp_rank=0,
+        tokenizer=tokenizer,
+        max_context_length=16,
+        num_tokens_per_microbatch=32,
+        vision_processor=None,
+    )
+    collator = TextCollator.Config().build(
+        context=DatasetBuildContext(
+            tokenizer=tokenizer,
+            max_context_length=16,
+            num_tokens_per_microbatch=32,
+            num_mtp_layers=num_mtp_layers,
+            read_options=grain.ReadOptions(),
+        )
+    )
+    iterator = iter(loader)
+    try:
+        for _ in range(3):
+            batch = next(iterator)
+            expected = collator(
+                [
+                    TextSequence(
+                        input_ids=batch.input.numpy(),
+                        labels=batch.labels.numpy(),
+                        positions=batch.positions.numpy(),
+                        padding_mask=batch.padding_mask.numpy(),
+                    )
+                ]
+            )
+            _assert_microbatches_equal(batch, expected)
+            assert batch.loss_token_counts.shape == (
+                (num_mtp_layers + 1,) if num_mtp_layers else ()
+            )
+            assert batch.routing_token_counts.shape == (num_mtp_layers + 1,)
+            for name, value in batch.to_input_dict("cpu").items():
+                assert torch.equal(value, expected.as_input_dict()[name])
+    finally:
+        iterator.close()
+        loader.close()
 
 
 def test_zephon_document_limit_rejects_less_than_one_document_per_bin() -> None:

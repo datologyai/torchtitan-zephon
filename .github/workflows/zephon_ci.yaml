@@ -94,9 +94,8 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: |
           python -m pip install --upgrade pip
+          python -m pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
           python -m pip install -r requirements.txt -r requirements-dev.txt
-          python -m pip install --force-reinstall --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
-          python -m pip install --no-deps "git+https://github.com/meta-pytorch/torch_checkpointing.git@main"
       - name: Run pyrefly
         if: steps.gate.outputs.run == 'true'
         run: pre-commit run pyrefly-check --all-files
@@ -111,11 +110,8 @@ jobs:
           python-version: '3.12'
       - name: Install CPU dependencies
         run: |
-          python -m pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
+          python -m pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cpu
           python -m pip install -r requirements.txt -r requirements-zephon.txt pytest
-          # torchtitan's data package imports attn_gym's Triton kernels, and the
-          # CPU torch wheel doesn't bring Triton.
-          python -m pip install triton==3.8.0
           # The elastic resume tests launch torchrun subprocesses that import
           # torchtitan, so it must be installed rather than only on pytest's path.
           python -m pip install --no-deps -e .
@@ -125,3 +121,11 @@ jobs:
         run: python -c "import zephon; print(zephon.__file__)"
       - name: Test Zephon integration
         run: python -m pytest tests/unit_tests/test_zephon_dataloader.py -q -rs
+      - name: Test upstream data and checkpoint contracts
+        run: |
+          python -m pytest -q -rs \
+            tests/unit_tests/cpu/components/data \
+            tests/unit_tests/cpu/components/checkpointer \
+            tests/unit_tests/cpu/components/test_validator.py \
+            tests/unit_tests/cpu/components/test_validator_frequency.py \
+            tests/unit_tests/cpu/config/test_config_loader.py

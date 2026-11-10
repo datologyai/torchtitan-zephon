@@ -13,7 +13,7 @@ recipe, so it comes from the ``ZEPHON_RUN_ID`` environment variable, which
 ``examples/zephon/run_training_smoke.sh`` sets.
 
 The save and resume recipes differ only in ``training.steps``, following the
-paired ``*_save``/``*_load`` recipes in ``torchtitan_recipes.tests.suites``.
+paired checkpoint recipes in ``torchtitan_recipes.tests.models``.
 """
 
 import os
@@ -30,7 +30,9 @@ _DATA_CONFIG = "examples/zephon/elastic_local_jsonl.toml"
 
 def llama3_debugmodel_zephon_smoke_save() -> Trainer.Config:
     """Train two steps and checkpoint every step, including the full last step."""
-    config = llama3_debugmodel(seq_len=_MAX_CONTEXT_LENGTH)
+    # Preserve FlexAttention for uncapped Zephon packing; Varlen attention
+    # requires a document cap when accelerator graphs are enabled.
+    config = llama3_debugmodel(seq_len=_MAX_CONTEXT_LENGTH, attn_backend="flex")
     aggregate_dir = os.environ.get("ZEPHON_AGGREGATE_DIR") or None
     config.dataloader = ZephonDataLoader.Config.from_toml(
         _DATA_CONFIG,
@@ -38,7 +40,6 @@ def llama3_debugmodel_zephon_smoke_save() -> Trainer.Config:
         aggregate_store=None if aggregate_dir else "torch://",
         run_id=os.environ.get("ZEPHON_RUN_ID"),
     )
-    config.training.max_context_length = _MAX_CONTEXT_LENGTH
     # Two sequences per microbatch and four per optimizer step: gradient
     # accumulation is 1 on 2 DP ranks and 2 on 1 DP rank, so each step reads a
     # whole window of the recipe's two canonical Zephon lanes.
