@@ -4,7 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import os
 import shutil
 import tempfile
 import unittest
@@ -31,8 +30,7 @@ class _ModelWithExpertBias(nn.Module):
 @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
 class TestEMACpuOffload(unittest.TestCase):
     """Exercises offload_to_cpu under real FSDP2 DTensor params -- the DTensor
-    pin_memory workaround (_pin_local/_materialize_dtensor in
-    torchtitan/components/optim/ema.py) can't be tested without real
+    local-shard allocation and checkpoint materialization require real
     DTensors.
     """
 
@@ -40,13 +38,20 @@ class TestEMACpuOffload(unittest.TestCase):
     def setUpClass(cls):
         cls._owns_pg = not dist.is_initialized()
         if cls._owns_pg:
-            os.environ.setdefault("MASTER_ADDR", "localhost")
-            os.environ.setdefault("MASTER_PORT", "29602")
-            os.environ.setdefault("RANK", "0")
-            os.environ.setdefault("WORLD_SIZE", "1")
-            os.environ.setdefault("LOCAL_RANK", "0")
-            torch.cuda.set_device(0)
-            dist.init_process_group(backend="nccl")
+            # Give the one-rank group its own store and device. Do not set
+            # RANK, LOCAL_RANK, or MASTER_PORT in os.environ: they stay set
+            # after this class, later tests that spawn ranks inherit them,
+            # and the default nccl backend picks each rank's GPU from
+            # LOCAL_RANK, so every rank would use GPU 0.
+            device = torch.device("cuda", 0)
+            torch.cuda.set_device(device)
+            dist.init_process_group(
+                backend="nccl",
+                store=dist.HashStore(),
+                rank=0,
+                world_size=1,
+                device_id=device,
+            )
 
     @classmethod
     def tearDownClass(cls):
@@ -171,7 +176,7 @@ class TestEMACpuOffload(unittest.TestCase):
         torch.cuda.synchronize()
 
         # hold the offload stream so its read of the params happens late
-        with torch.cuda.stream(ema._offload_stream):
+        with ema._offload_stream:
             torch.cuda._sleep(1_500_000_000)
         ema.step(2)
         with torch.no_grad():  # the conflicting write, on the compute stream
@@ -416,7 +421,7 @@ class TestEMACpuOffload(unittest.TestCase):
         """Regression test for offload+buffer parity: FSDP2's fully_shard only
         shards parameters, not buffers, so expert_bias_E-like buffers stay
         plain (non-DTensor) tensors even on a DTensor-param model --
-        _pin_local/_materialize_dtensor must handle that mixed case, not just
+        initialization and checkpointing must handle that mixed case, not just
         the all-DTensor or all-plain-tensor cases exercised above."""
         import torch.distributed.checkpoint as dcp
 

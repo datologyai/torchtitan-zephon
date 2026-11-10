@@ -13,6 +13,7 @@ import logging
 from dataclasses import dataclass, field, replace
 from typing import Any, TYPE_CHECKING
 
+import numpy as np
 from verifiers.v1.configs.client import TrainClientConfig as VerifiersTrainClientConfig
 from verifiers.v1.configs.taskset import TasksetConfig as VerifiersTasksetConfig
 from verifiers.v1.dialects.chat import message_to_wire
@@ -22,7 +23,6 @@ from verifiers.v1.types import SamplingConfig as VerifiersSamplingConfig
 from torchtitan.components.renderer import RendererConfig, RenderersConfigAdapter
 
 from torchtitan.components.tokenizer import HuggingFaceTokenizer
-from torchtitan.rl.components.data import IterableRLDataLoader
 from torchtitan.rl.examples.verifiers.data import (
     VerifiersTaskDataset,
     VerifiersTaskSample,
@@ -34,19 +34,23 @@ from torchtitan.rl.examples.verifiers.generation_server import (
     VerifiersGenerationMetadata,
 )
 from torchtitan.rl.rollout.advantage import AdvantageEstimator
+from torchtitan.rl.rollout.data import IterableRolloutDataLoader
 from torchtitan.rl.rollout.rollouter import Rollouter, RolloutWorker
 from torchtitan.rl.rollout.rubric import RewardFn, Rubric
 from torchtitan.rl.rollout.types import (
     GenerateFn,
+    ReleaseSessionFn,
     Rollout,
     RolloutGroup,
     RolloutStatus,
     RolloutTurn,
     RolloutTurnID,
+    split_prompt,
 )
 
 if TYPE_CHECKING:
-    from torchtitan.rl.generator import SamplingConfig
+    from torchtitan.rl.actors.system import ActorSystem
+    from torchtitan.rl.generator.types import SamplingConfig
 
 
 logger = logging.getLogger(__name__)
@@ -85,7 +89,7 @@ class VerifiersRollouter(Rollouter):
 
     @dataclass(kw_only=True, slots=True)
     class Config(Rollouter.Config):
-        training_dataloader: IterableRLDataLoader.Config
+        training_dataloader: IterableRolloutDataLoader.Config
         """Verifiers taskset used for training samples and environment scoring."""
 
         validation_dataset: VerifiersTaskDataset.Config
@@ -165,12 +169,17 @@ class VerifiersRollouter(Rollouter):
     async def setup_async(
         self,
         *,
+        actor_system: ActorSystem,
         tokenizer_config: HuggingFaceTokenizer.Config,
         renderer_config: RendererConfig,
         hf_assets_path: str,
     ) -> None:
-        """Start the EnvServer and connect it to TorchTitan generation."""
-        del tokenizer_config
+        """Start the EnvServer and connect it to TorchTitan generation.
+
+        Rollouts run in the EnvServer, so no rollout worker pool is spawned through
+        ``actor_system``.
+        """
+        del actor_system, tokenizer_config
         if self._verifiers_env_client is not None:
             return
         if not isinstance(renderer_config, RenderersConfigAdapter):
@@ -198,7 +207,7 @@ class VerifiersRollouter(Rollouter):
                 # The local endpoint does not authenticate. An empty environment
                 # variable name makes Verifiers send its required "EMPTY" value.
                 api_key_var="",
-                renderer=renderer_config.renderers_config,
+                renderer=renderer_config.get_renderers_config(),
                 multiplex=self._verifiers_config.renderer_multiplex,
                 renderer_model_name=hf_assets_path,
             )
@@ -233,6 +242,7 @@ class VerifiersRollouter(Rollouter):
         self,
         *,
         generate_fn: GenerateFn,
+        release_session_fn: ReleaseSessionFn,
         sample: object,
         group_id: int,
         group_size: int,
@@ -241,10 +251,13 @@ class VerifiersRollouter(Rollouter):
         """Run sibling rollouts through Verifiers, then compute advantages."""
         if self._generation_server is None:
             raise RuntimeError("Verifiers rollouter is not initialized")
+        # Each group replaces this one slot. That is safe because every group's generate_fn routes the
+        # same way; keep per-group state out of it.
         self._generation_server.set_generate_fn(generate_fn)
-        rollouts = await asyncio.gather(
+        results = await asyncio.gather(
             *(
                 self._run_single_rollout(
+                    release_session_fn=release_session_fn,
                     sample=sample,
                     sampling=(
                         sampling
@@ -255,8 +268,15 @@ class VerifiersRollouter(Rollouter):
                     rollout_id=rollout_id,
                 )
                 for rollout_id in range(group_size)
-            )
+            ),
+            return_exceptions=True,
         )
+        # Raise only after every sibling finished: the caller releases the group next, and a
+        # sibling still generating would pin the group again, with nothing left to release it.
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        rollouts = results
 
         outputs = await self._rubric.score_group(rollouts, sample)
         for rollout, output in zip(rollouts, outputs, strict=True):
@@ -272,12 +292,13 @@ class VerifiersRollouter(Rollouter):
     async def _run_single_rollout(
         self,
         *,
+        release_session_fn: ReleaseSessionFn,
         sample: object,
         sampling: SamplingConfig,
         group_id: int,
         rollout_id: int,
     ) -> Rollout:
-        """Send one task to Verifiers and convert its trace to a rollout."""
+        """Send one task to Verifiers, release its sessions, and convert its trace to a rollout."""
         if not isinstance(sample, VerifiersTaskSample):
             raise TypeError("Verifiers requires a VerifiersTaskSample")
         if (
@@ -302,6 +323,25 @@ class VerifiersRollouter(Rollouter):
                 **{GROUP_ID_SAMPLING_PARAM: group_id},
             ),
         )
+        # `run` returned, so this rollout starts no new calls. For each trace, release its routing
+        # session (Verifiers sends the trace id as X-Session-ID) and take its generation metadata,
+        # so another agent's trace (a judge, a simulated user) leaves nothing on the server.
+        # TODO: an attempt Verifiers retried has no trace here, so its held KV waits for the
+        # group's release and its routing pin for the router's `max_sessions` LRU. The generation
+        # server could record each rollout's session ids and release those too.
+        generation_metadata_by_session = {
+            trace.id: self._generation_server.pop_generation_metadata(trace.id)
+            for trace in verifiers_episode.traces
+        }
+
+        async def release(session_id: str) -> None:
+            try:
+                await release_session_fn(routing_session_id=session_id)
+            except Exception:
+                # Not fatal: `max_sessions` evicts an unreleased session.
+                logger.exception("releasing routing session %s failed", session_id)
+
+        await asyncio.gather(*(release(trace.id) for trace in verifiers_episode.traces))
         traces = [trace for trace in verifiers_episode.traces if trace.agent.trainable]
         if len(traces) != 1:
             raise ValueError(
@@ -311,7 +351,7 @@ class VerifiersRollouter(Rollouter):
 
         # Convert Verifiers' graph trace to TitanRL's linear rollout turns.
         trace = traces[0]
-        generation_metadata = self._generation_server.pop_generation_metadata(trace.id)
+        generation_metadata = generation_metadata_by_session[trace.id]
         turns = self.trace_to_rollout_turns(
             trace=trace,
             generation_metadata=generation_metadata,
@@ -320,9 +360,29 @@ class VerifiersRollouter(Rollouter):
         )
         status = self.rollout_status(verifiers_episode=verifiers_episode, trace=trace)
         if not turns:
+            # Verifiers records an overlong first prompt as a failed model call; vLLM, the
+            # renderer and the generation server all word it "maximum context length".
+            first_prompt_too_long = any(
+                call.error is not None
+                and "maximum context length" in call.error.message
+                for call in trace.calls
+            )
+            if first_prompt_too_long:
+                # The harness builds the first prompt in the env server, so the dataset can't
+                # be filtered for it; flag it here as a data problem, not a policy one.
+                task = sample.verifiers_task_data.get(
+                    "name", sample.verifiers_task_data.get("idx")
+                )
+                logger.warning(
+                    "rollout group=%d/rollout=%d: the first prompt%s does not fit the "
+                    "context; marking ERROR",
+                    group_id,
+                    rollout_id,
+                    "" if task is None else f" of task {task}",
+                )
             status = RolloutStatus.ERROR
         logs = verifiers_rollout_logs(verifiers_episode, trace)
-        if status == RolloutStatus.ERROR:
+        if status.is_error():
             log_failed_rollout(logs, group_id=group_id, rollout_id=rollout_id)
         else:
             turns[-1].env_rewards[VERIFIERS_REWARD_KEY] = trace.reward
@@ -336,6 +396,10 @@ class VerifiersRollouter(Rollouter):
 
     @staticmethod
     def rollout_status(*, verifiers_episode: Any, trace: Any) -> RolloutStatus:
+        # Verifiers flags an expired deadline with is_timeout: a stage's on its trace (which can keep
+        # ok=True), the whole episode's on the episode.
+        if trace.is_timeout or verifiers_episode.is_timeout:
+            return RolloutStatus.ERROR_TIMEOUT
         if not verifiers_episode.ok or not trace.ok:
             return RolloutStatus.ERROR
         if not trace.is_truncated:
@@ -379,6 +443,8 @@ class VerifiersRollouter(Rollouter):
         replied_nodes: set[int] = set()
         last_turn_by_node: dict[int, RolloutTurn] = {}
         turns: list[RolloutTurn] = []
+        # The last appended turn's prompt + completion; not reset between branches
+        previous_token_ids: list[int] = []
 
         for branch in trace.branches:
             token_ids = branch.token_ids
@@ -396,6 +462,10 @@ class VerifiersRollouter(Rollouter):
                 for start, end in _trainable_token_spans(mask):
                     absolute_start = branch_offset + start
                     absolute_end = branch_offset + end
+                    prompt_prefix_len, prompt_delta_token_ids = split_prompt(
+                        token_ids[:absolute_start], previous_token_ids
+                    )
+                    previous_token_ids = token_ids[:absolute_end]
                     turns.append(
                         RolloutTurn(
                             rollout_id=RolloutTurnID(
@@ -403,12 +473,13 @@ class VerifiersRollouter(Rollouter):
                                 rollout_id=rollout_id,
                                 turn_id=len(turns),
                             ),
-                            prompt_token_ids=list(token_ids[:absolute_start]),
-                            completion_token_ids=list(
-                                token_ids[absolute_start:absolute_end]
+                            prompt_prefix_len=prompt_prefix_len,
+                            prompt_delta_token_ids=prompt_delta_token_ids,
+                            completion_token_ids=np.asarray(
+                                token_ids[absolute_start:absolute_end], dtype=np.int32
                             ),
-                            completion_logprobs=list(
-                                logprobs[absolute_start:absolute_end]
+                            completion_logprobs=np.asarray(
+                                logprobs[absolute_start:absolute_end], dtype=np.float32
                             ),
                             min_policy_version=generation_metadata.min_policy_version,
                             max_policy_version=generation_metadata.max_policy_version,
@@ -451,9 +522,8 @@ def _local_taskset_module(taskset: VerifiersTasksetConfig) -> str | None:
 def verifiers_rollout_logs(verifiers_episode: Any, trace: Any) -> dict[str, Any]:
     """Summarize how a Verifiers rollout ended, for ``Rollout.logs``.
 
-    Verifiers' own "rollout done" line prints only the error class, so an agent
-    timeout, a crashed tool call and an unreachable model endpoint all read as
-    "HarnessError". This keeps the error messages and tracebacks (a failed
+    Verifiers' own "rollout done" line prints only the error type or stop
+    condition. This keeps the error messages and tracebacks (a failed
     harness's message ends with its stderr), per-phase wall time and model-call
     latency. For example, ``agent_sec=7200 model_sec=6900
     slowest_model_call_sec=1801`` on an agent timeout points at slow generation,

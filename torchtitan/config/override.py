@@ -199,7 +199,7 @@ def override(
     Example — fuse MoE only on the later layers::
 
         @override(target=MoE.Config,
-                  fqns=["layers.1[0-9].moe"],
+                  fqns=["layers.1[0-9].feed_forward"],
                   description="Vendor fused MoE")
         def vendor_moe(cfg: MoE.Config) -> VendorMoE.Config:
             return VendorMoE.Config(num_experts=cfg.num_experts, ...)
@@ -502,6 +502,9 @@ def apply_overrides(
             f"whose `target` and `fqns` match nodes in the config tree."
         )
 
+    # Replacements are assigned after construction, so the first __post_init__
+    # did not see them. Configs with nothing to check inherit the base no-op.
+    config_root.__post_init__()
     return replacements
 
 

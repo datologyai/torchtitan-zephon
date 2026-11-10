@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
 import spmd_types as spmd
 import torch
@@ -15,10 +15,10 @@ import torch_remat as remat
 from spmd_types import SpmdType
 from torch import nn
 
-from torchtitan.config import TrainingConfig
+from torchtitan.config import PrecisionConfig
 from torchtitan.config.parallelism import ParallelismConfig
-from torchtitan.distributed.activation_checkpoint import ActivationCheckpointingConfig
-from torchtitan.distributed.local_compile import local_compile
+from torchtitan.distributed.activation_remat import ActivationRematConfig
+from torchtitan.distributed.local_compile import local_compile, LocalCompileConfig
 from torchtitan.distributed.parallelism_context import MeshAxisName, ParallelismContext
 from torchtitan.distributed.spmd_types import (
     annotate_input_spmd_types,
@@ -27,26 +27,22 @@ from torchtitan.distributed.spmd_types import (
 from torchtitan.models.base.module import Module
 from torchtitan.models.common import Linear
 from torchtitan.models.common.attention import (
+    Attention,
     AttentionMetadata,
     AttentionMetadataMap,
-    BaseAttention,
     FlexAttentionMetadata,
     LinearAttentionMetadata,
     local_head_split,
     VarlenAttentionMetadata,
 )
-from torchtitan.models.common.attention.gdn import GatedDeltaNet
-from torchtitan.models.common.decoder import Decoder
+from torchtitan.models.common.attention.gdn import GDN
+from torchtitan.models.common.decoder import TransformerBlock
 from torchtitan.models.common.decoder_sharding import (
     decoder_input_sharding,
     token_id_placement,
 )
-from torchtitan.models.common.flops import (
-    delta_rule_flops_per_token,
-    get_nparams_and_active_nparams,
-    quadratic_attention_flops_per_token,
-)
 from torchtitan.models.common.linear import maybe_gather_tp_input
+from torchtitan.models.common.moe import MoE
 from torchtitan.models.common.multimodal import (
     add_zero_vision_dependency,
     build_dummy_vision_inputs,
@@ -86,16 +82,16 @@ class OffsetRMSNorm(Module):
         self.weight = nn.Parameter(torch.empty(config.dim))
 
     @local_compile("offset_rmsnorm", batch_invariant=False, recompile_limit=16)
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
         # Upcast to float32 for numerical stability in pow/rsqrt
-        input_dtype = x.dtype
-        x = x.float()
-        variance = x.pow(2).mean(-1, keepdim=True)
-        x = x * torch.rsqrt(variance + self.eps)
-        return ((1.0 + self.weight.float()) * x).to(input_dtype)
+        input_dtype = input.dtype
+        input = input.float()
+        variance = input.pow(2).mean(-1, keepdim=True)
+        input = input * torch.rsqrt(variance + self.eps)
+        return ((1.0 + self.weight.float()) * input).to(input_dtype)
 
 
-class Qwen35Attention(BaseAttention):
+class Qwen35Attention(Attention):
     """Full attention with output gating and partial RoPE for Qwen3.5.
 
     Differences from GQAttention:
@@ -105,13 +101,12 @@ class Qwen35Attention(BaseAttention):
     - QK norm uses OffsetRMSNorm
 
     Uses separate ``wq``/``wk``/``wv`` instead of the common fused ``qkv_linear``
-    (so this subclasses ``BaseAttention``, not ``GQAttention``): the 2x-wide,
+    (so this subclasses ``Attention``, not ``GQAttention``): the 2x-wide,
     gated ``wq`` doesn't fit a fused QKV projection that TP-shards by head.
     """
 
     @dataclass(kw_only=True, slots=True)
-    class Config(BaseAttention.Config):
-        n_heads: int
+    class Config(Attention.Config):
         n_kv_heads: int
         head_dim: int
         rotary_dim: int
@@ -122,7 +117,20 @@ class Qwen35Attention(BaseAttention):
         wo: Linear.Config
         q_norm: OffsetRMSNorm.Config
         k_norm: OffsetRMSNorm.Config
-        inner_attention: Module.Config
+
+        def flops_per_token(self, seq_len: int) -> int:
+            from torchtitan.models.common.flops import (
+                quadratic_attention_flops_per_token,
+            )
+
+            head_dim = self.head_dim
+            return quadratic_attention_flops_per_token(
+                num_heads=self.n_heads,
+                qk_head_dim=head_dim,
+                v_head_dim=head_dim,
+                seq_len=seq_len,
+                sliding_window_size=None,
+            )
 
     def __init__(self, config: Config):
         super().__init__()
@@ -218,42 +226,24 @@ class Qwen35Attention(BaseAttention):
         return xq_THK, xk_THK
 
 
-class Qwen35TransformerBlock(Module):
+class Qwen35TransformerBlock(TransformerBlock):
     """Hybrid transformer block for Qwen3.5.
 
     Each layer uses either full attention (Qwen35Attention) or linear
-    attention (GatedDeltaNet), determined by which config is provided.
+    attention (GDN), determined by the attention config type.
     Both types share the same FFN/MoE structure.
     """
 
     @dataclass(kw_only=True, slots=True)
-    class Config(Module.Config):
-        attention: Qwen35Attention.Config | None = None
-        delta_net: GatedDeltaNet.Config | None = None
-        feed_forward: Module.Config | None = None
-        moe: Module.Config | None = None
-        attention_norm: OffsetRMSNorm.Config
-        ffn_norm: OffsetRMSNorm.Config
+    class Config(TransformerBlock.Config):
+        pass
 
     def __init__(self, config: Config):
         super().__init__()
-        self.full_attn = config.attention is not None
+        self.full_attn = isinstance(config.attention, Qwen35Attention.Config)
+        self.attention = config.attention.build()
 
-        if self.full_attn:
-            self.attn = config.attention.build()  # pyrefly: ignore [missing-attribute]
-            self.attention_metadata_key = type(self.attn.inner_attention)
-        else:
-            assert config.delta_net is not None
-            self.attn = config.delta_net.build()
-            self.attention_metadata_key = type(self.attn.inner_gated_delta_net)
-
-        self.moe_enabled = config.moe is not None
-        if self.moe_enabled:
-            # pyrefly: ignore [missing-attribute]
-            self.moe = config.moe.build()
-        else:
-            assert config.feed_forward is not None
-            self.feed_forward = config.feed_forward.build()
+        self.feed_forward = config.feed_forward.build()
 
         self.attention_norm = config.attention_norm.build()
         self.ffn_norm = config.ffn_norm.build()
@@ -269,16 +259,16 @@ class Qwen35TransformerBlock(Module):
     ) -> torch.Tensor:
         h_TD = self.attention_norm(x_TD)
         if self.full_attn:
-            h_TD = self.attn(h_TD, attention_metadata, positions)
+            h_TD = self.attention(h_TD, attention_metadata, positions)
         else:
-            h_TD = self.attn(h_TD, attention_metadata)
+            h_TD = self.attention(h_TD, attention_metadata)
         # The residual add reads the attention output with bare ops.
         remat.recompute_needs_tensor(h_TD)
         x_TD = x_TD + h_TD
 
         h_TD = self.ffn_norm(x_TD)
-        if self.moe_enabled:
-            h_TD = self.moe(
+        if isinstance(self.feed_forward, MoE):
+            h_TD = self.feed_forward(
                 h_TD,
                 padding_mask_T=padding_mask,
                 aux_loss_denominator=aux_loss_denominator,
@@ -300,9 +290,11 @@ class Qwen35Model(MultimodalModel):
     def _register_optimizer_hooks(
         cls, optimizers, model_parts, parallelism_context
     ) -> None:
+        from torchtitan.models.common.aux_loss import register_aux_loss_zero_hook
         from torchtitan.models.common.moe import register_moe_load_balancing_hook
 
         register_moe_load_balancing_hook(optimizers, model_parts, parallelism_context)
+        register_aux_loss_zero_hook(optimizers, model_parts, parallelism_context)
 
     pipeline_first_stage_module_fqns = ("vision_encoder",)
 
@@ -349,51 +341,24 @@ class Qwen35Model(MultimodalModel):
     """
 
     @dataclass(kw_only=True, slots=True)
-    class Config(Decoder.Config):
+    class Config(MultimodalModel.Config):
+        # pyrefly: ignore [bad-override]
+        layers: list[Qwen35TransformerBlock.Config]
         vision_encoder: Qwen35VisionEncoder.Config | None = None
-        local_compile_regions: list[str] = field(
-            default_factory=lambda: [
-                "loss",
-                "fused_binary_activation",
-                "gated_rmsnorm",
-                "offset_rmsnorm",
-                "partial_rope",
-                "shared_expert_gate",
-                "fp32_to_bf16_split",
-            ]
-        )
-
-        def get_nparams_and_flops(
-            self, model: nn.Module, seq_len: int
-        ) -> tuple[int, int]:
-            # The vision encoder cost scales with patches rather than text
-            # sequence length, so this remains a decoder-only MFU estimate.
-            qwen_model = cast("Qwen35Model", model)
-            nparams, active_nparams = get_nparams_and_active_nparams(
-                model,
-                modules_excluded_from_active_params=(qwen_model.vision_encoder,),
+        local_compile: LocalCompileConfig = field(
+            default_factory=lambda: LocalCompileConfig(
+                regions=[
+                    "loss",
+                    "fused_binary_activation",
+                    "gated_rmsnorm",
+                    "gdn_split_in_proj",
+                    "offset_rmsnorm",
+                    "partial_rope",
+                    "shared_expert_gate",
+                    "fp32_to_bf16_split",
+                ]
             )
-            attention_op_flops = 0
-            for layer in self.layers:
-                if isinstance(layer.attention, Qwen35Attention.Config):
-                    attention = layer.attention
-                    attention_op_flops += quadratic_attention_flops_per_token(
-                        num_heads=attention.n_heads,
-                        qk_head_dim=attention.head_dim,
-                        v_head_dim=attention.head_dim,
-                        seq_len=seq_len,
-                    )
-                elif isinstance(layer.delta_net, GatedDeltaNet.Config):
-                    delta_net = layer.delta_net
-                    num_value_heads = (
-                        delta_net.in_proj_v.out_features // delta_net.value_head_dim
-                    )
-                    attention_op_flops += delta_rule_flops_per_token(
-                        num_heads=num_value_heads,
-                        key_head_dim=delta_net.key_head_dim,
-                        v_head_dim=delta_net.value_head_dim,
-                    )
-            return nparams, 6 * active_nparams + attention_op_flops
+        )
 
     def __init__(self, config: Config):
         from torchtitan.distributed.spmd_types import spmd_mesh_size
@@ -401,16 +366,16 @@ class Qwen35Model(MultimodalModel):
         tp = spmd_mesh_size("tp")
         if tp > 1:
             delta_net = next(
-                (layer.delta_net for layer in config.layers if layer.delta_net),
+                (
+                    layer.attention
+                    for layer in config.layers
+                    if isinstance(layer.attention, GDN.Config)
+                ),
                 None,
             )
             if delta_net is not None:
-                num_key_heads = (
-                    delta_net.in_proj_q.out_features // delta_net.key_head_dim
-                )
-                num_value_heads = (
-                    delta_net.in_proj_v.out_features // delta_net.value_head_dim
-                )
+                num_key_heads = delta_net.n_key_heads
+                num_value_heads = delta_net.n_heads
                 if num_key_heads % tp != 0 or num_value_heads % tp != 0:
                     raise ValueError(
                         f"tensor parallel degree ({tp}) must divide "
@@ -432,18 +397,18 @@ class Qwen35Model(MultimodalModel):
         self,
         *,
         parallelism_context: ParallelismContext,
-        training: TrainingConfig,
+        precision: PrecisionConfig,
         parallelism: ParallelismConfig,
-        local_compile_regions: list[str],
-        ac_config: ActivationCheckpointingConfig | None,
+        local_compile: LocalCompileConfig,
+        activation_remat: ActivationRematConfig | None,
         dump_folder: str,
     ) -> Qwen35Model:
         return super().parallelize(
             parallelism_context=parallelism_context,
-            training=training,
+            precision=precision,
             parallelism=parallelism,
-            local_compile_regions=local_compile_regions,
-            ac_config=ac_config,
+            local_compile=local_compile,
+            activation_remat=activation_remat,
             dump_folder=dump_folder,
         )
 
@@ -454,11 +419,12 @@ class Qwen35Model(MultimodalModel):
         parallelism_context: ParallelismContext,
         parallelism: ParallelismConfig,
         max_num_documents: int | None = None,
-        max_context_length: int | None = None,
+        global_routing_token_counts: torch.Tensor | None = None,
         **kwargs: Any,
-    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any], dict[str, Any]]:
         """Build masks, CP-shard, SPMD-wrap (+ deltanet annotation), and return."""
         del kwargs
+        loss_kwargs = input_dict.pop("loss_kwargs", {})
         padding_mask = input_dict.get("padding_mask", None)
 
         # Attention masks are built from the 1D ``positions``.
@@ -468,7 +434,6 @@ class Qwen35Model(MultimodalModel):
                 positions=positions,
                 padding_mask=padding_mask,
                 max_num_documents=max_num_documents,
-                max_context_length=max_context_length,
             )
 
         if parallelism_context.cp_enabled and self.tok_embeddings is not None:
@@ -477,8 +442,7 @@ class Qwen35Model(MultimodalModel):
             if pixel_values is not None:
                 if special_tokens is None or "image_id" not in special_tokens:
                     raise ValueError(
-                        "pixel_values require special_tokens with an 'image_id' "
-                        "entry."
+                        "pixel_values require special_tokens with an 'image_id' entry."
                     )
                 input_dict["image_vision_bank_indices_T"] = build_vision_bank_indices(
                     input_dict["input"],
@@ -531,6 +495,8 @@ class Qwen35Model(MultimodalModel):
             "'positions' or 'mrope_positions'."
         )
         input_dict["positions"] = rope_positions
+        input_shardings.update(dict.fromkeys(loss_kwargs, input_shardings["labels"]))
+        input_dict.update(loss_kwargs)
         if parallelism_context.cp_enabled:
             input_dict = self._cp_shard(
                 input_dict,
@@ -549,11 +515,14 @@ class Qwen35Model(MultimodalModel):
                 if isinstance(metadata, LinearAttentionMetadata):
                     metadata.annotate_spmd_types()
 
+        loss_kwargs = {name: input_dict.pop(name) for name in loss_kwargs}
         inputs = input_dict.pop("input")
         labels = input_dict.pop("labels")
-        if any(layer.moe is not None for layer in self.config.layers):
-            input_dict["aux_loss_denominators"] = None
-        return inputs, labels, input_dict
+        if any(
+            isinstance(layer.feed_forward, MoE.Config) for layer in self.config.layers
+        ):
+            input_dict["aux_loss_denominators"] = global_routing_token_counts
+        return inputs, labels, input_dict, loss_kwargs
 
     def _get_vision_embeds(
         self,
@@ -733,9 +702,7 @@ class Qwen35Model(MultimodalModel):
             x = layer(
                 x,
                 (
-                    attention_metadata.get(
-                        cast(Qwen35TransformerBlock, layer).attention_metadata_key
-                    )
+                    attention_metadata.get(type(layer.attention.inner_attention))
                     if attention_metadata is not None
                     else None
                 ),

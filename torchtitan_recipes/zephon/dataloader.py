@@ -248,11 +248,13 @@ class ZephonDataLoader(BaseDataLoader):
         """Named local paths or ``hf://`` URIs with optional mixture weights."""
 
         max_num_documents_scope: Literal["batch", "bin"] = "batch"
-        """Interpret max_num_documents per local token batch or per packed bin.
+        """Interpret max_num_documents per local token microbatch or packed bin.
 
-        With B bins per batch, "batch" caps each bin at floor(limit / B),
-        which can pad more than Grain's shared batch budget. "bin" keeps packing
-        independent of batch size and reserves B * limit documents for attention.
+        With B sequences per microbatch, "batch" caps each bin at floor(limit / B),
+        which can pad more than Grain's shared microbatch budget. A "bin" limit
+        requires B == 1: TorchTitan sizes attention metadata from this config's
+        max_num_documents before it builds the loader. For B > 1, use "batch"
+        with max_num_documents = B * per-sequence limit.
         """
         pack_algorithm: Literal[
             "wrap", "first_fit", "best_fit", "best_fit_wrap"
@@ -375,6 +377,14 @@ class ZephonDataLoader(BaseDataLoader):
         self.max_num_documents = config.max_num_documents
         self._num_mtp_layers = config.num_mtp_layers
         if config.max_num_documents is not None:
+            if config.max_num_documents_scope == "bin" and local_batch_size > 1:
+                raise ValueError(
+                    "max_num_documents_scope='bin' requires one packed sequence "
+                    f"per microbatch; got {local_batch_size}. Use "
+                    "max_num_documents_scope='batch' with "
+                    f"max_num_documents={local_batch_size * config.max_num_documents} "
+                    f"to allow up to {config.max_num_documents} documents per sequence."
+                )
             if config.max_num_documents_scope == "batch":
                 max_sequences_per_bin = config.max_num_documents // local_batch_size
                 if max_sequences_per_bin == 0:
@@ -382,8 +392,6 @@ class ZephonDataLoader(BaseDataLoader):
                         "max_num_documents must be at least the local batch size "
                         f"({local_batch_size}) when max_num_documents_scope='batch'"
                     )
-            else:
-                self.max_num_documents = config.max_num_documents * local_batch_size
         pad_token_id = (
             _resolve_pad_token_id(tokenizer, config.pad_token_id)
             if config.pack_algorithm != "wrap" or max_sequences_per_bin is not None

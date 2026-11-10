@@ -1,7 +1,8 @@
 # Llama 3
 
-Llama 3 is the reference decoder model in torchtitan. Training recipes cover
-Llama 3.1 8B, 70B, and 405B, plus a small debug model used by CI.
+Llama 3 is the reference decoder model in torchtitan. Shipped training recipes
+are Llama 3.1 8B and 70B, plus a small debug model used by CI. 405B is a model
+flavor in `flavors.py` and has no shipped recipe.
 
 ## Download the tokenizer
 
@@ -12,8 +13,8 @@ Follow the access instructions on the official
 python scripts/download_hf_assets.py --repo_id meta-llama/Llama-3.1-8B --assets tokenizer
 ```
 
-The 8B, 70B, and 405B recipes expect tokenizer assets under
-`./assets/hf/Llama-3.1-8B` (and the matching 70B / 405B paths).
+The shipped 8B and 70B recipes expect tokenizer assets at
+`./assets/hf/Llama-3.1-8B` and `./assets/hf/Llama-3.1-70B`.
 
 ## Training
 
@@ -43,7 +44,7 @@ Coverage below matches the sharding set in [`flavors.py`](./flavors.py),
 | DDP | Including DDP+CP |
 | Activation checkpointing | Selective and full |
 | `torch.compile` | 1D and multi-dimensional jobs |
-| MXFP8 | Eager recipe `llama3_8b_mxfp8`; GraphTrainer recipes `graph_trainer_llama3_debugmodel_mxfp8` and `graph_trainer_llama3_8b_mxfp8` |
+| MXFP8 | Eager `llama3_8b_mxfp8` in `torchtitan_recipes.tests.models.llama3`; GraphTrainer `graph_trainer_llama3_debugmodel_mxfp8` in `torchtitan_recipes.tests.graph_trainer.llama3` |
 
 ## Numerical checks
 

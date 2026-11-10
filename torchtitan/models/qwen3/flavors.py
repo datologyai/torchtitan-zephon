@@ -185,7 +185,7 @@ def _build_qwen3_moe_layers(
                     qk_norm=_qwen3_norm(head_dim),
                     enable_sp=enable_sp,
                 ),
-                moe=make_moe_config(
+                feed_forward=make_moe_config(
                     num_experts=num_experts,
                     router=make_router_config(
                         dim=dim,
@@ -203,6 +203,8 @@ def _build_qwen3_moe_layers(
                         param_init=experts_init,
                         enable_ep=enable_ep,
                     ),
+                    aux_loss_coeff=1e-3,
+                    aux_loss_type="batch_wise",
                     enable_sp=enable_sp,
                 ),
             )
@@ -717,7 +719,7 @@ def _235b_a22b(
             rope=CosSinRoPE.Config(
                 dim=head_dim,
                 max_context_length=seq_len,
-                theta=5000000.0,
+                theta=1000000.0,
             ),
             enable_sp=parallelism.enable_sequence_parallel,
             enable_ep=parallelism.expert_parallel_degree > 1,
@@ -744,7 +746,7 @@ def build_model_config(
     *,
     parallelism: ParallelismConfig,
     seq_len: int | None = None,
-    attn_backend: str = "flex",
+    attn_backend: str = "varlen",
     converters: list[ModelConfigConverter.Config] | None = None,
 ) -> Qwen3Model.Config:
     get_config, max_context_len = MODEL_FLAVORS[flavor]

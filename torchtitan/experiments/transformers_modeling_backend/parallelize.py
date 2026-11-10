@@ -18,16 +18,16 @@ from torch.distributed.fsdp import (
 )
 from torch.distributed.tensor import Shard
 
-from torchtitan.config import TrainingConfig
+from torchtitan.config import PrecisionConfig
 from torchtitan.config.parallelism import FSDPSymmMemScope, ParallelismConfig
 from torchtitan.distributed import ParallelismContext
-from torchtitan.distributed.activation_checkpoint import ActivationCheckpointingConfig
+from torchtitan.distributed.activation_remat import ActivationRematConfig
 from torchtitan.distributed.fsdp import (
     disable_fsdp_gradient_division,
     enable_fsdp_symm_mem,
     get_fsdp_reshard_after_forward_policy,
 )
-from torchtitan.distributed.local_compile import apply_local_compile
+from torchtitan.distributed.local_compile import LocalCompileConfig
 
 
 logger = logging.getLogger(__name__)
@@ -85,10 +85,10 @@ def parallelize_hf_transformers(
     model: nn.Module,
     *,
     parallelism_context: ParallelismContext,
-    training: TrainingConfig,
+    precision: PrecisionConfig,
     parallelism: ParallelismConfig,
-    local_compile_regions: list[str],
-    ac_config: ActivationCheckpointingConfig,
+    local_compile: LocalCompileConfig,
+    activation_remat: ActivationRematConfig | None,
     dump_folder: str,
     **kwargs: Any,
 ):
@@ -102,7 +102,7 @@ def parallelize_hf_transformers(
     5. Apply AC and FSDP
     """
     # Bind local implementations early; torch.compile traces on first use.
-    apply_local_compile(local_compile_regions)
+    local_compile.apply()
     # Flex attention supports FSDP, TP, CP, and PP (in any combination). Under CP
     # the flex kernel's local SPMD boundary redistributes
     # k/v from seq-sharded to CP-Replicate (all-gather); see _attach_flex_kernel
@@ -171,16 +171,16 @@ def parallelize_hf_transformers(
     # 4. Single parallelize call -- handles TP, EP, MoE, everything
     model._parallelize(parallelism_context)
 
-    if ac_config is not None:
-        ac_config.build(dump_folder=dump_folder).apply(model)
+    if activation_remat is not None:
+        activation_remat.apply(model)
 
     model._apply_fsdp(
         parallelism_context=parallelism_context,
-        training=training,
+        precision=precision,
         parallelism=parallelism,
     )
 
-    if training.enable_cpu_offload:
+    if parallelism.fsdp_enable_cpu_offloading:
         logger.info("Applied CPU Offloading to the model")
 
     if parallelism_context.cp_enabled:

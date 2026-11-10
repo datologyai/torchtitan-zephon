@@ -275,7 +275,7 @@ class TestYaRNScaling(unittest.TestCase):
 
     def test_deepseek_mscale_applies_below_original_sequence_length(self):
         from torchtitan.models.deepseek_v3 import build_model_config, MODEL_FLAVORS
-        from torchtitan.models.deepseek_v3.model import Attention
+        from torchtitan.models.deepseek_v3.attention import DeepSeekMLAAttention
 
         _, max_context_length = MODEL_FLAVORS["debugmodel"]
         model_config = build_model_config(
@@ -285,7 +285,7 @@ class TestYaRNScaling(unittest.TestCase):
             parallelism=ParallelismConfig(),
         )
         attention_config = model_config.layers[0].attention
-        assert isinstance(attention_config, Attention.Config)
+        assert isinstance(attention_config, DeepSeekMLAAttention.Config)
         attention_config.rope = dataclasses.replace(
             attention_config.rope,
             max_context_length=attention_config.rope.original_seq_len // 2,
@@ -320,8 +320,9 @@ class TestPerLayerRoPECache(unittest.TestCase):
             inner_attention=VarlenInnerAttention.Config(),
             rope=ComplexRoPE.Config(dim=head_dim, max_context_length=16),
         ).build()
+        attention.bfloat16()
 
-        x = torch.randn(8, dim)
+        x = torch.randn(8, dim, dtype=torch.bfloat16)
         positions = torch.arange(8)
         attention_metadata = create_varlen_metadata_for_document(positions)
 
@@ -359,6 +360,17 @@ class TestPerLayerRoPECache(unittest.TestCase):
             len({id(rope_cfg) for rope_cfg in layer_rope_cfgs}),
             len(layer_rope_cfgs),
         )
+
+
+class TestRoPEBufferDtypeGuard(unittest.TestCase):
+    def test_cache_values_survive_rejected_cast(self):
+        for cls in (ComplexRoPE, CosSinRoPE):
+            with self.subTest(rope=cls.__name__):
+                rope = cls.Config(dim=8, max_context_length=16).build()
+                expected = rope.cache.clone()
+                with self.assertRaises(ValueError):
+                    rope.to(torch.bfloat16)
+                torch.testing.assert_close(rope.cache, expected, rtol=0, atol=0)
 
 
 if __name__ == "__main__":

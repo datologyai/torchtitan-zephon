@@ -10,11 +10,15 @@ from dataclasses import dataclass
 import pytest
 from renderers import (
     AutoRendererConfig,
+    create_renderer,
+    CustomRendererConfig,
     DefaultRendererConfig,
     OffsetTokenizer,
     Qwen3RendererConfig,
     Tokenizer,
 )
+from renderers.qwen3 import Qwen3Renderer
+from torchtitan.components.data.multimodal.vision_processor import VisionProcessor
 from torchtitan.components.renderer import (
     from_renderers,
     RendererConfig,
@@ -24,18 +28,24 @@ from torchtitan.components.renderer import (
 
 from torchtitan.components.tokenizer import HuggingFaceTokenizer
 from torchtitan.config import Configurable
+from torchtitan.models.qwen3_5 import QWEN3_5_VISION_PROCESSOR_KWARGS
 
 _TOKENIZER_PATH = "tests/assets/tokenizer"
 
 
+class InTreeQwen3Renderer(Qwen3Renderer):
+    """Stands in for an in-tree renderer selected through `CustomRendererConfig`."""
+
+    config_class = Qwen3RendererConfig
+
+
+# Also used by tests/rl/unit_tests/cpu/test_verifiers.py.
+IN_TREE_RENDERER_PATH = (
+    "tests.unit_tests.cpu.components.test_renderer.InTreeQwen3Renderer"
+)
+
+
 # --- RenderersConfigAdapter ---
-
-
-def test_from_renderers_returns_adapter() -> None:
-    renderers_config = Qwen3RendererConfig(enable_thinking=False)
-    config = from_renderers(renderers_config)
-    assert isinstance(config, RenderersConfigAdapter)
-    assert config.renderers_config is renderers_config
 
 
 def test_build_renders_with_titan_tokenizer() -> None:
@@ -54,11 +64,35 @@ def test_build_renders_with_titan_tokenizer() -> None:
     assert len(rendered.is_content) == len(rendered.token_ids)
 
 
+def test_build_rejects_a_vision_processor_for_a_library_renderer() -> None:
+    tokenizer = HuggingFaceTokenizer(tokenizer_path=_TOKENIZER_PATH)
+    vision_processor = VisionProcessor.Config(**QWEN3_5_VISION_PROCESSOR_KWARGS).build()
+    with pytest.raises(
+        ValueError, match="'qwen3' renderer comes from the renderers library"
+    ):
+        from_renderers(Qwen3RendererConfig()).build(
+            tokenizer=tokenizer, vision_processor=vision_processor
+        )
+
+
+def test_build_rejects_a_vision_processor_set_twice() -> None:
+    tokenizer = HuggingFaceTokenizer(tokenizer_path=_TOKENIZER_PATH)
+    vision_processor = VisionProcessor.Config(**QWEN3_5_VISION_PROCESSOR_KWARGS)
+    config = from_renderers(
+        CustomRendererConfig(
+            import_path="torchtitan.models.qwen3_5.renderer.Qwen35ImageRefRenderer",
+            vision_processor=vision_processor,
+        )
+    )
+    with pytest.raises(ValueError, match="sets vision_processor too"):
+        config.build(tokenizer=tokenizer, vision_processor=vision_processor.build())
+
+
 @pytest.mark.parametrize(
     ("renderers_config", "reason"),
     [
         (AutoRendererConfig(), "MODEL_RENDERER_MAP"),
-        (DefaultRendererConfig(), "special-token variables"),
+        (DefaultRendererConfig(), "bos_token and eos_token only"),
     ],
 )
 def test_auto_and_default_are_refused(renderers_config, reason: str) -> None:
@@ -86,6 +120,33 @@ def test_config_to_dict_is_json() -> None:
     assert value["renderer"]["renderers_config"]["name"] == "qwen3"
     assert value["renderer"]["renderers_config"]["enable_thinking"] is False
     json.dumps(value)
+
+
+def test_custom_renderer_builds_the_same_renderer_from_its_serialized_config() -> None:
+    config = from_renderers(
+        CustomRendererConfig(import_path=IN_TREE_RENDERER_PATH, enable_thinking=False)
+    )
+    tokenizer = HuggingFaceTokenizer(tokenizer_path=_TOKENIZER_PATH)
+    messages = [{"role": "user", "content": "hi"}]
+
+    renderer = config.build(tokenizer=tokenizer)
+
+    assert isinstance(renderer, InTreeQwen3Renderer)
+    # A Verifiers worker receives the config as JSON and builds from that alone.
+    worker_config = CustomRendererConfig.model_validate_json(
+        json.dumps(config.to_dict()["renderers_config"])
+    )
+    worker_renderer = create_renderer(
+        RendererTokenizerWrapper(tokenizer), worker_config
+    )
+    assert isinstance(worker_renderer, InTreeQwen3Renderer)
+    assert worker_renderer.render_ids(messages, add_generation_prompt=True) == (
+        renderer.render_ids(messages, add_generation_prompt=True)
+    )
+    # The option reaches the renderer's own config: enable_thinking changes the prompt.
+    assert renderer.render_ids(messages, add_generation_prompt=True) != from_renderers(
+        CustomRendererConfig(import_path=IN_TREE_RENDERER_PATH, enable_thinking=True)
+    ).build(tokenizer=tokenizer).render_ids(messages, add_generation_prompt=True)
 
 
 # --- RendererTokenizerWrapper ---

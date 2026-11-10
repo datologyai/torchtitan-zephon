@@ -21,9 +21,11 @@ from torchtitan.config.transform import (
 )
 from torchtitan.models.common import (
     ComplexRoPE,
+    DenseFeedForward,
     Embedding,
     FeedForward,
     HiMidLoLinear,
+    LimitedSwiGLU,
     Linear,
     MoE,
     RMSNorm,
@@ -50,19 +52,19 @@ from torchtitan.models.common.decoder_sharding import (
     rowwise_sharding_config,
     token_embedding_sharding_config,
 )
-from torchtitan.models.common.moe_sharding import (
+from torchtitan.models.common.moe.sharding import (
     moe_sharding_config,
     router_gate_sharding_config,
 )
 from torchtitan.models.common.param_init import depth_scaled_std
 
 from .attention import (
-    Attention,
     CompressedSparseAttention,
+    DeepSeekV4Attention,
     HeavilyCompressedAttention,
     SlidingWindowAttention,
 )
-from .compressor import Compressor, Indexer
+from .compressor import Compressor, Indexer, SparseIndexerLoss
 from .mhc import HcHead, HcPost, HcPre
 from .model import DeepSeekV4Model, DeepSeekV4TransformerBlock
 from .moe import DeepSeekV4Router
@@ -233,7 +235,7 @@ def _make_v4_attn_config(
     n_layers: int,
     rope: RoPE.Config,
     enable_sp: bool,
-) -> Attention.Config:
+) -> DeepSeekV4Attention.Config:
     hd = head_dim
     per_group_in = (n_heads * hd) // n_groups
     per_group_out = n_groups * o_lora_rank
@@ -281,6 +283,17 @@ def _make_v4_attn_config(
         inner_attention_cls = HeavilyCompressedAttention
     else:
         inner_attention_cls = SlidingWindowAttention
+    aux_loss_cfg = (
+        SparseIndexerLoss.Config(
+            coeff=0.01,
+            reduce_mesh="loss",
+            softmax_scale=softmax_scale,
+            num_heads=n_heads,
+            compress_ratio=compress_ratio,
+        )
+        if compress_ratio == 4
+        else None
+    )
     inner_attention_cfg = inner_attention_cls.Config(
         window_size=window_size,
         compress_ratio=compress_ratio,
@@ -289,10 +302,11 @@ def _make_v4_attn_config(
         sharding_config=dsa_inner_attention_sharding_config(
             compress_ratio=compress_ratio
         ),
+        aux_loss=aux_loss_cfg,
     )
     replicated_input_layout = dense_activation_placement(tp=spmd.R, cp=spmd.S(0))
 
-    return Attention.Config(
+    return DeepSeekV4Attention.Config(
         dim=dim,
         n_heads=n_heads,
         head_dim=head_dim,
@@ -367,6 +381,7 @@ def _make_v4_attn_config(
             out_features=n_heads,
             bias=False,
             param_init=_LINEAR_INIT,
+            preserve_dtype_params=("weight",),
             sharding_config=attn_sink_sharding_config(),
         ),
         compressor=compressor_cfg,
@@ -388,10 +403,35 @@ def _make_v4_moe_config(
     n_hash_layers: int,
     route_norm: bool,
     route_scale: float,
+    swiglu_limit: float | None,
     load_balance_coeff: float,
     enable_sp: bool,
     enable_ep: bool,
 ):
+    routed_experts = make_routed_experts_config(
+        dim=dim,
+        hidden_dim=moe_inter_dim,
+        num_experts=num_experts,
+        top_k=top_k,
+        param_init=_depth_experts_init(layer_id),
+        enable_ep=enable_ep,
+    )
+    shared_experts = (
+        make_shared_expert_ffn_config(
+            dim=dim,
+            hidden_dim=moe_inter_dim * num_shared_experts,
+            w13_param_init=_LINEAR_INIT,
+            w2_param_init=_depth_init(layer_id),
+            enable_sp=enable_sp,
+        )
+        if num_shared_experts > 0
+        else None
+    )
+    if swiglu_limit is not None:
+        routed_experts.activation_fn = LimitedSwiGLU.Config(limit=swiglu_limit)
+        if shared_experts is not None:
+            shared_experts.activation_fn = LimitedSwiGLU.Config(limit=swiglu_limit)
+
     return MoE.Config(
         num_experts=num_experts,
         router=DeepSeekV4Router.Config(
@@ -415,25 +455,8 @@ def _make_v4_moe_config(
                 layer_id=layer_id, n_hash_layers=n_hash_layers
             ),
         ),
-        routed_experts=make_routed_experts_config(
-            dim=dim,
-            hidden_dim=moe_inter_dim,
-            num_experts=num_experts,
-            top_k=top_k,
-            param_init=_depth_experts_init(layer_id),
-            enable_ep=enable_ep,
-        ),
-        shared_experts=(
-            make_shared_expert_ffn_config(
-                dim=dim,
-                hidden_dim=moe_inter_dim * num_shared_experts,
-                w13_param_init=_LINEAR_INIT,
-                w2_param_init=_depth_init(layer_id),
-                enable_sp=enable_sp,
-            )
-            if num_shared_experts > 0
-            else None
-        ),
+        routed_experts=routed_experts,
+        shared_experts=shared_experts,
         load_balance_coeff=load_balance_coeff,
         sharding_config=moe_sharding_config(enable_sp=enable_sp),
     )
@@ -445,7 +468,7 @@ def _make_v4_dense_config(
     dim: int,
     hidden_dim: int,
     enable_sp: bool,
-) -> FeedForward.Config:
+) -> DenseFeedForward.Config:
     return make_ffn_config(
         dim=dim,
         hidden_dim=hidden_dim,
@@ -488,6 +511,7 @@ def _build_v4_layers(
     hc_eps: float = 1e-6,
     dense_hidden_dim: int | None = None,
     dense_layers: set[int] | None = None,
+    swiglu_limit: float | None = None,
     enable_sp: bool,
     enable_ep: bool,
 ) -> list[DeepSeekV4TransformerBlock.Config]:
@@ -523,6 +547,7 @@ def _build_v4_layers(
             enable_sp=enable_sp,
         )
 
+        ffn_cfg: FeedForward.Config
         if layer_id in dense_layers:
             ffn_cfg = _make_v4_dense_config(
                 layer_id=actual_layer_id,
@@ -530,10 +555,8 @@ def _build_v4_layers(
                 hidden_dim=dense_hidden_dim,
                 enable_sp=enable_sp,
             )
-            moe_cfg = None
         else:
-            ffn_cfg = None
-            moe_cfg = _make_v4_moe_config(
+            ffn_cfg = _make_v4_moe_config(
                 layer_id=actual_layer_id,
                 dim=dim,
                 moe_inter_dim=moe_inter_dim,
@@ -544,6 +567,7 @@ def _build_v4_layers(
                 n_hash_layers=n_hash_layers,
                 route_norm=route_norm,
                 route_scale=route_scale,
+                swiglu_limit=swiglu_limit,
                 load_balance_coeff=load_balance_coeff,
                 enable_sp=enable_sp,
                 enable_ep=enable_ep,
@@ -565,7 +589,6 @@ def _build_v4_layers(
                     sharding_config=norm_sharding,
                 ),
                 feed_forward=ffn_cfg,
-                moe=moe_cfg,
                 hc_attn_pre=HcPre.Config(
                     hc_mult=hc_mult,
                     dim=dim,
@@ -612,6 +635,7 @@ def _make_mtp_inner_block(
         softmax_scale=inner_attn_cfg.softmax_scale,
         index_topk=inner_attn_cfg.index_topk,
         sharding_config=dsa_inner_attention_sharding_config(compress_ratio=1),
+        aux_loss=None,
     )
     return block_cfg
 
@@ -631,8 +655,8 @@ def _build_mtp_layers(
     for depth in range(num_mtp_layers):
         layer_id = n_main_layers + depth
         block_cfg = _make_mtp_inner_block(inner_cfg, rope)
-        if block_cfg.moe is not None:
-            router_cfg = block_cfg.moe.router
+        if isinstance(block_cfg.feed_forward, MoE.Config):
+            router_cfg = block_cfg.feed_forward.router
             assert isinstance(router_cfg, DeepSeekV4Router.Config)
             router_cfg.gate.param_init = _depth_init(layer_id)
             router_cfg.layer_id = layer_id
@@ -640,17 +664,17 @@ def _build_mtp_layers(
                 layer_id=layer_id, n_hash_layers=router_cfg.n_hash_layers
             )
             expert_init = _depth_experts_init(layer_id)
-            block_cfg.moe.routed_experts.w13.param_init = (
+            block_cfg.feed_forward.routed_experts.w13.param_init = (
                 fused_grouped_gate_up_param_init(expert_init)
             )
-            block_cfg.moe.routed_experts.w2.param_init = {
+            block_cfg.feed_forward.routed_experts.w2.param_init = {
                 "weight": expert_init["w2_EDF"]
             }
-            if block_cfg.moe.shared_experts is not None:
+            if block_cfg.feed_forward.shared_experts is not None:
                 depth_init = _depth_init(layer_id)
-                block_cfg.moe.shared_experts.w2.param_init = depth_init
-                block_cfg.moe.shared_experts.w13.param_init = fused_gate_up_param_init(
-                    _LINEAR_INIT, _LINEAR_INIT
+                block_cfg.feed_forward.shared_experts.w2.param_init = depth_init
+                block_cfg.feed_forward.shared_experts.w13.param_init = (
+                    fused_gate_up_param_init(_LINEAR_INIT, _LINEAR_INIT)
                 )
         mtp_layers.append(
             MTPBlock.Config(
@@ -658,7 +682,6 @@ def _build_mtp_layers(
                 attention_norm=block_cfg.attention_norm,
                 ffn_norm=block_cfg.ffn_norm,
                 feed_forward=block_cfg.feed_forward,
-                moe=block_cfg.moe,
                 hc_attn_pre=block_cfg.hc_attn_pre,
                 hc_ffn_pre=block_cfg.hc_ffn_pre,
                 hc_post=block_cfg.hc_post,
@@ -883,6 +906,7 @@ def _deepseek_v4_flash(
     n_hash_layers = 3
     route_norm = True
     route_scale = 1.5
+    swiglu_limit = 10.0
     load_balance_coeff = 1e-3
     hc_mult = 4
     sinkhorn_iters = 20
@@ -931,6 +955,7 @@ def _deepseek_v4_flash(
         n_hash_layers=n_hash_layers,
         route_norm=route_norm,
         route_scale=route_scale,
+        swiglu_limit=swiglu_limit,
         load_balance_coeff=load_balance_coeff,
         rope=rope,
         rope_compress=rope_compress,
@@ -1029,6 +1054,7 @@ def _deepseek_v4_pro(
     n_hash_layers = 3
     route_norm = True
     route_scale = 2.5
+    swiglu_limit = 10.0
     load_balance_coeff = 1e-3
     hc_mult = 4
     sinkhorn_iters = 20
@@ -1077,6 +1103,7 @@ def _deepseek_v4_pro(
         n_hash_layers=n_hash_layers,
         route_norm=route_norm,
         route_scale=route_scale,
+        swiglu_limit=swiglu_limit,
         load_balance_coeff=load_balance_coeff,
         rope=rope,
         rope_compress=rope_compress,
@@ -1161,6 +1188,9 @@ def build_model_config(
     seq_len: int | None = None,
     n_mtp_layers: int = 0,
     converters: list[ModelConfigConverter.Config] | None = None,
+    indexer_loss_coeff: float = 0.01,
+    indexer_loss_mass_weighted: bool = False,
+    indexer_loss_chunk_size: int = 128,
 ) -> DeepSeekV4Model.Config:
     if flavor not in MODEL_FLAVORS:
         raise ValueError(
@@ -1179,6 +1209,23 @@ def build_model_config(
         seq_len=context_len,
         parallelism=parallelism,
     )
+    if indexer_loss_coeff < 0 or indexer_loss_chunk_size <= 0:
+        raise ValueError(
+            "Indexer loss coefficient must be nonnegative and chunk size positive."
+        )
+    for layer in config.layers:
+        inner_attention = layer.attention.inner_attention
+        if inner_attention.aux_loss is not None:
+            inner_attention.aux_loss = (
+                dataclasses.replace(
+                    inner_attention.aux_loss,
+                    coeff=indexer_loss_coeff,
+                    mass_weighted=indexer_loss_mass_weighted,
+                    chunk_size=indexer_loss_chunk_size,
+                )
+                if indexer_loss_coeff > 0
+                else None
+            )
     if converters is not None:
         validate_converter_compatibility(converters)
         for converter_cfg in converters:

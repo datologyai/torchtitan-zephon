@@ -27,17 +27,20 @@ from torchtitan.models.qwen3_5.flavors import (
     _output_linear_init,
     Qwen35Model,
     QWEN3_5_SPECIAL_TOKENS,
+    QWEN3_5_VISION_PROCESSOR_KWARGS,
 )
 from torchtitan.models.qwen3_5.rope import MRoPE
 
 __all__ = [
     "build_model_config",
     "QWEN3_8_SPECIAL_TOKENS",
+    "QWEN3_8_VISION_PROCESSOR_KWARGS",
     "Qwen35Model",
     "MODEL_FLAVORS",
 ]
 
 QWEN3_8_SPECIAL_TOKENS = dict(QWEN3_5_SPECIAL_TOKENS)
+QWEN3_8_VISION_PROCESSOR_KWARGS = dict(QWEN3_5_VISION_PROCESSOR_KWARGS)
 
 
 def _qwen3_8_2_4t_a95b(
@@ -119,7 +122,7 @@ def build_model_config(
     *,
     parallelism: ParallelismConfig,
     seq_len: int | None = None,
-    attn_backend: str = "flex",
+    attn_backend: str = "varlen",
     converters: list[ModelConfigConverter.Config] | None = None,
 ) -> Qwen35Model.Config:
     get_config, max_context_len = MODEL_FLAVORS[flavor]

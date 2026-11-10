@@ -7,6 +7,7 @@
 from .activation import (
     BinaryActivationFn,
     ClampedSwiGLU,
+    LimitedSwiGLU,
     Sigmoid,
     SiLU,
     SiTUGLU,
@@ -31,17 +32,17 @@ from .attention import (
     InnerAttention,
     LinearAttentionMetadata,
     QKVLinear,
-    ScaledDotProductInnerAttention,
     SlidingWindowFlexInnerAttention,
+    SlidingWindowVarlenInnerAttention,
     VarlenAttentionMetadata,
     VarlenInnerAttention,
 )
 from .decoder import Decoder, TransformerBlock
 from .embedding import Embedding
-from .feed_forward import compute_ffn_hidden_dim, FeedForward
-from .hi_mid_lo_linear import HiMidLoLinear
+from .feed_forward import compute_ffn_hidden_dim, DenseFeedForward, FeedForward
 from .linear import ColumnParallelLinear, GroupedLinear, Linear, RowParallelLinear
-from .moe import MicrobatchWiseLoadBalanceLoss, MoE
+from .linear.hi_mid_lo_linear import HiMidLoLinear
+from .moe import BatchWiseLoadBalanceLoss, MicrobatchWiseLoadBalanceLoss, MoE
 from .multimodal import MultimodalModel
 from .nn_modules import Conv1d, Conv2d, GELU, GroupNorm, Identity, LayerNorm, RMSNorm
 from .norm import GatedRMSNorm
@@ -59,11 +60,13 @@ __all__ = [
     "create_attention_mask",
     "create_varlen_metadata_for_document",
     "Decoder",
+    "DenseFeedForward",
     "Embedding",
     "FeedForward",
     "FlexAttentionMetadata",
     "FlexInnerAttention",
     "HiMidLoLinear",
+    "LimitedSwiGLU",
     "QKVLinear",
     "GELU",
     "GatedRMSNorm",
@@ -80,14 +83,15 @@ __all__ = [
     "LayerNorm",
     "Linear",
     "LinearAttentionMetadata",
+    "BatchWiseLoadBalanceLoss",
     "MoE",
     "MicrobatchWiseLoadBalanceLoss",
     "MultimodalModel",
     "RMSNorm",
     "RoPE",
     "RowParallelLinear",
-    "ScaledDotProductInnerAttention",
     "SlidingWindowFlexInnerAttention",
+    "SlidingWindowVarlenInnerAttention",
     "Sigmoid",
     "SiLU",
     "BinaryActivationFn",

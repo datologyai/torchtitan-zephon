@@ -137,6 +137,7 @@ def llama3_8b_zephon():
     config = llama3_8b()
     config.dataloader = ZephonDataLoader.Config.from_toml(
         "/path/to/recipe.toml",
+        max_num_documents=64,
         aggregate_store="torch://",
         run_id="run-42",
     )
@@ -150,6 +151,21 @@ def llama3_8b_zephon():
 ```bash
 python -m torchtitan.train --module my_package.recipes --config llama3_8b_zephon
 ```
+
+Upstream Llama recipes now use Varlen attention by default. With accelerator
+graphs enabled, set `max_num_documents` to bound the attention metadata and
+Zephon's packing. The limit applies to a local token microbatch by default;
+choose it for your data and keep it at least as large as the number of packed
+sequences per microbatch. Lower limits can add padding. To keep uncapped
+packing, use a FlexAttention model recipe, as the GPU smoke recipes do, or set
+`config.training.disable_accelerator_graphs = True`.
+
+Document limits use `max_num_documents_scope="batch"` by default. For two packed
+sequences with up to two documents each, use `max_num_documents=4`. A configured
+`max_num_documents_scope="bin"` limit is supported only with one packed sequence
+per microbatch; larger microbatches raise an error because TorchTitan reserves
+attention metadata from the config's limit before building the loader. This
+applies to both training and validation loaders.
 
 `from_toml` reads a Zephon data recipe; its keyword arguments set config
 fields on top of it. Distributed runs aggregate Zephon checkpoint state across
