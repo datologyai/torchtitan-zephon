@@ -8,29 +8,40 @@
 the consume-time staleness invariant, the metrics timer drain, and RolloutTurnID."""
 
 import asyncio
+import itertools
 import json
 import logging
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
+import numpy as np
 import pytest
 import torch
-
-from torchtitan.rl.components.batcher import Batcher
-from torchtitan.rl.components.training_sample_builder import (
-    TrainingSample,
-    TrainingSampleGroup,
-)
-from torchtitan.rl.components.work_buffer import (
-    RolloutGroupWork,
-    RolloutGroupWorkBuffer,
-)
-from torchtitan.rl.observability import metrics as m
-from torchtitan.rl.observability.controller import (
+from torchtitan.rl.controller.controller import Controller, ValidationConfig
+from torchtitan.rl.controller.metrics import (
     compute_perf_ratio_metrics,
     compute_policy_age_metrics,
     MetricsTimer,
 )
+from torchtitan.rl.controller.work_buffer import (
+    RolloutGroupWork,
+    RolloutGroupWorkBuffer,
+)
+from torchtitan.rl.generator.types import SamplingConfig
+from torchtitan.rl.observability import metrics as m
 from torchtitan.rl.rollout import RolloutGroup
-from torchtitan.rl.rollout.types import RolloutTurnID
+from torchtitan.rl.rollout.types import (
+    Rollout,
+    RolloutStatus,
+    RolloutTurn,
+    RolloutTurnID,
+)
+
+from torchtitan.rl.trainer.batcher import Batcher
+from torchtitan.rl.trainer.training_sample_builder import (
+    TrainingSample,
+    TrainingSampleGroup,
+)
 
 
 def test_controller_config_maybe_log(tmp_path, caplog) -> None:
@@ -42,13 +53,13 @@ def test_controller_config_maybe_log(tmp_path, caplog) -> None:
     config.trainer.debug.print_config = True
     config.trainer.debug.save_config_file = "config.json"
 
-    with caplog.at_level(logging.INFO, logger="torchtitan.rl.controller"):
+    with caplog.at_level(logging.INFO, logger="torchtitan.rl.controller.controller"):
         config.maybe_log()
 
     assert "Running with configs:" in caplog.text
     with open(tmp_path / "config.json") as file:
         saved_config = json.load(file)
-    assert saved_config["trainer"]["training"]["max_context_length"] == 128
+    assert saved_config["trainer"]["model"]["max_context_length"] == 128
 
 
 def _training_sample(*, group_id: int, rollout_id: int) -> TrainingSample:
@@ -56,10 +67,10 @@ def _training_sample(*, group_id: int, rollout_id: int) -> TrainingSample:
         min_policy_version=0,
         max_policy_version=0,
         rollout_id=RolloutTurnID(group_id=group_id, rollout_id=rollout_id, turn_id=0),
-        token_ids=[1, 2, 3],
-        loss_mask=[False, True, True],
-        logprobs=[0.0, 0.1, 0.2],
-        advantage=[0.0, 1.0, 1.0],
+        token_ids=np.array([1, 2, 3]),
+        loss_mask=np.array([False, True, True]),
+        logprobs=np.array([0.0, 0.1, 0.2], dtype=np.float32),
+        advantage=np.array([0.0, 1.0, 1.0], dtype=np.float32),
     )
 
 
@@ -88,10 +99,12 @@ def _variable_length_group(
                     rollout_id=rollout_id,
                     turn_id=0,
                 ),
-                token_ids=list(range(token_length)),
-                loss_mask=[False] + [True] * (token_length - 1),
-                logprobs=[0.0] * token_length,
-                advantage=[0.0] + [1.0] * (token_length - 1),
+                token_ids=np.arange(token_length),
+                loss_mask=np.array([False] + [True] * (token_length - 1)),
+                logprobs=np.zeros(token_length, dtype=np.float32),
+                advantage=np.array(
+                    [0.0] + [1.0] * (token_length - 1), dtype=np.float32
+                ),
             )
         )
     return TrainingSampleGroup(group_id=group_id, training_samples=samples, metrics=[])
@@ -242,7 +255,12 @@ def test_dp_assignment_avoids_all_padding_ranks_when_possible() -> None:
     )
     assert batch is not None
     assert group_is_trainable
-    cells = [microbatch for ranks in batch.microbatches for microbatch in ranks]
+    cells = [
+        microbatch
+        for group in batch.microbatch_groups
+        for ranks in group
+        for microbatch in ranks
+    ]
     assert len(cells) == 4  # 2 microbatches x 2 ranks
     for cell in cells:
         assert cell.loss_mask.any()
@@ -268,8 +286,8 @@ def test_batcher_uses_flat_rank_capacity_and_reports_padding() -> None:
 
     assert batch is not None
     assert group_is_trainable
-    assert len(batch.microbatches) == 1
-    microbatch = batch.microbatches[0][0]
+    assert len(batch.microbatch_groups) == 1
+    microbatch = batch.microbatch_groups[0][0][0]
     assert microbatch.positions.tolist() == [0, 1, 2, 0, 1, 2, 0, 1]
     assert not microbatch.padding_mask.any()
     torch.testing.assert_close(microbatch.loss_token_counts, torch.tensor([8]))
@@ -290,7 +308,7 @@ def test_flat_rank_packing_preserves_padding_mask() -> None:
     )
 
     assert batch is not None
-    microbatch = batch.microbatches[0][0]
+    microbatch = batch.microbatch_groups[0][0][0]
     assert microbatch.positions.tolist() == [0, 1, 2, 3, 0, 1, 2, 3]
     torch.testing.assert_close(microbatch.loss_token_counts, torch.tensor([3]))
     assert microbatch.padding_mask.tolist() == [
@@ -325,7 +343,7 @@ def test_batcher_balances_packing_across_dp_ranks() -> None:
     assert group_is_trainable
     assert [
         [int((~rank.padding_mask).sum().item()) for rank in microbatch]
-        for microbatch in batch.microbatches
+        for (microbatch,) in batch.microbatch_groups
     ] == [[6, 6]]
 
 
@@ -437,9 +455,10 @@ def test_batcher_reports_padding_when_document_limit_blocks_greedy_order() -> No
     )
 
     assert batch is not None
-    assert len(batch.microbatches) == 3
+    assert len(batch.microbatch_groups) == 3
     assert all(
-        microbatch.padding_mask.numel() == 6 for (microbatch,) in batch.microbatches
+        microbatch.padding_mask.numel() == 6
+        for ((microbatch,),) in batch.microbatch_groups
     )
     assert _metric_value(batch, "train_batch/padding_frac") == pytest.approx(4 / 9)
 
@@ -461,9 +480,9 @@ def test_document_limit_applies_to_each_local_microbatch() -> None:
 
     assert batch is not None
     assert group_is_trainable
-    assert len(batch.microbatches) == 2
+    assert len(batch.microbatch_groups) == 2
     num_documents = []
-    for (microbatch,) in batch.microbatches:
+    for ((microbatch,),) in batch.microbatch_groups:
         real_document_starts = (microbatch.positions == 0) & ~microbatch.padding_mask
         num_documents.append(int(real_document_starts.sum().item()))
     assert sorted(num_documents) == [2, 3]
@@ -484,8 +503,8 @@ def test_document_limit_can_be_smaller_than_rows_per_microbatch() -> None:
     )
 
     assert batch is not None
-    assert len(batch.microbatches) == 2
-    for (microbatch,) in batch.microbatches:
+    assert len(batch.microbatch_groups) == 2
+    for ((microbatch,),) in batch.microbatch_groups:
         real_document_starts = (microbatch.positions == 0) & ~microbatch.padding_mask
         assert int(real_document_starts.sum().item()) == 1
 
@@ -500,10 +519,10 @@ def test_batcher_filters_training_samples_longer_than_context() -> None:
         temperature=1.0,
     )
     sample = _training_sample(group_id=0, rollout_id=0)
-    sample.token_ids = list(range(6))
-    sample.loss_mask = [False] * 6
-    sample.logprobs = [0.0] * 6
-    sample.advantage = [0.0] * 6
+    sample.token_ids = np.arange(6)
+    sample.loss_mask = np.zeros(6, dtype=bool)
+    sample.logprobs = np.zeros(6, dtype=np.float32)
+    sample.advantage = np.zeros(6, dtype=np.float32)
 
     pending, group_is_trainable = batcher.add_training_samples(
         training_sample_group=TrainingSampleGroup(
@@ -747,7 +766,7 @@ def test_windowed_fifo_takes_within_anchored_window() -> None:
 
 def test_no_window_takes_oldest_ready_group_past_a_stuck_head() -> None:
     async def run() -> None:
-        # S=1, P=4 -> 8 slots, no window. g0..g4 INFLIGHT; g0 never finishes; g1..g4 finish out of id order.
+        # S=1, P=4 -> 8 slots, no window. g0..g4 CLAIMED; g0 never finishes; g1..g4 finish out of id order.
         buffer = _buffer(capacity=8, window_size=None)
         for group_id in range(8):
             await _admit(buffer, group_id)
@@ -767,11 +786,273 @@ def test_no_window_takes_oldest_ready_group_past_a_stuck_head() -> None:
         taker = asyncio.create_task(buffer.take_finalized())
         await asyncio.sleep(0)
         assert not taker.done()
-        await buffer.claim_next()  # g5 -> INFLIGHT
-        await buffer.claim_next()  # g6 -> INFLIGHT
+        await buffer.claim_next()  # g5 -> CLAIMED
+        await buffer.claim_next()  # g6 -> CLAIMED
         await _finalize(buffer, 6)
         await asyncio.sleep(0)
         assert taker.done()
         assert taker.result().group_id == 6
 
     asyncio.run(run())
+
+
+async def _block_forever(*args, **kwargs) -> None:
+    await asyncio.Event().wait()
+
+
+async def _train_one_step(*args, **kwargs) -> None:
+    await asyncio.sleep(0)
+
+
+def _run_with_generator_watcher(
+    watcher,
+    *,
+    trainer_loop=_block_forever,
+    validate=None,
+    validation=None,
+    on_close=None,
+) -> Controller:
+    """Run Controller.run with stub loops: `watcher` waits on the engine loops, `trainer_loop` trains, the rest block."""
+    controller = object.__new__(Controller)
+    controller.config = SimpleNamespace(
+        async_loop=SimpleNamespace(
+            num_training_steps=1,
+            max_active_rollout_groups=1,
+            window_size=None,
+            target_offpolicy_steps=0,
+            windowed_fifo_batches=None,
+            max_offpolicy_steps=None,
+            num_prompts_per_train_step=1,
+            group_buffer=SimpleNamespace(
+                build=lambda **kwargs: SimpleNamespace(
+                    close=AsyncMock(side_effect=on_close)
+                )
+            ),
+            validation=validation or ValidationConfig(),
+        ),
+        trainer=SimpleNamespace(
+            training=SimpleNamespace(num_tokens_per_microbatch_per_dp_rank=8)
+        ),
+    )
+    controller.start_step = 0
+    controller._validation_tasks = []
+    controller._has_pending_validation = False
+    controller.metrics_processor = Mock()
+    controller.trainer = None
+    controller.trainer_dp_degree = 1
+    controller.tokenizer = SimpleNamespace(eos_id=0)
+    controller._sampling = SimpleNamespace(temperature=1.0)
+    controller.generator_router = SimpleNamespace(
+        wait_engine_loop=SimpleNamespace(call_one=watcher)
+    )
+    with (
+        patch.multiple(
+            Controller,
+            validate=validate or AsyncMock(return_value=[]),
+            _make_generate_fn=lambda self: None,
+            _data_input_loop=_block_forever,
+            _rollout_loop=_block_forever,
+            _batcher_loop=_block_forever,
+            _trainer_loop=trainer_loop,
+        ),
+    ):
+        asyncio.run(asyncio.wait_for(controller.run(), timeout=10))
+    return controller
+
+
+def test_run_fails_when_an_engine_loop_crashes() -> None:
+    async def crashed() -> None:
+        raise RuntimeError("engine loop crashed")
+
+    with pytest.raises(RuntimeError, match="engine loop crashed"):
+        _run_with_generator_watcher(crashed)
+
+
+def test_run_fails_when_the_engine_loops_exit_mid_run() -> None:
+    async def exited() -> None:
+        return None
+
+    with pytest.raises(
+        RuntimeError, match="generator_wait_engine_loop exited unexpectedly"
+    ):
+        _run_with_generator_watcher(exited)
+
+
+@pytest.mark.parametrize(
+    "step_0_validation, validate_after_training, started_steps, logged_steps",
+    [
+        # Ends before training does: the call after training logs it at step 1.
+        ("ends", False, [0], [1]),
+        # Ends while run()'s finally awaits group_buffer.close(): also logged at step 1.
+        ("ends_during_close", False, [0], [1]),
+        # Still running: run() cancels it (else run() hangs) and logs nothing.
+        ("runs", False, [0], []),
+        # Cancelled, then the validation after training runs and is logged at step 1.
+        ("runs", True, [0, 1], [1]),
+        # Failed: the call after training raises its error.
+        ("fails", False, [0], None),
+    ],
+)
+def test_run_ends_validation(
+    step_0_validation, validate_after_training, started_steps, logged_steps
+) -> None:
+    """1 training step: what run() does with the step-0 validation and the validation after training."""
+    started = []
+    close_started = asyncio.Event()
+
+    async def validate(self, *, step: int) -> list[m.Metric]:
+        started.append(step)
+        if step == 0 and step_0_validation == "ends_during_close":
+            await close_started.wait()
+        if step == 0 and step_0_validation == "runs":
+            await asyncio.Event().wait()
+        if step == 0 and step_0_validation == "fails":
+            raise RuntimeError("validation failed")
+        return [m.Metric(f"started_{step}", m.Mean(1.0))]
+
+    async def close() -> None:
+        close_started.set()
+        await asyncio.sleep(0)  # the validation returns
+
+    def run() -> Controller:
+        return _run_with_generator_watcher(
+            _block_forever,
+            trainer_loop=_train_one_step,
+            validate=validate,
+            validation=ValidationConfig(
+                validate_after_training=validate_after_training
+            ),
+            on_close=close,
+        )
+
+    if step_0_validation == "fails":
+        with pytest.raises(RuntimeError, match="validation failed"):
+            run()
+    else:
+        controller = run()
+        assert [
+            call.kwargs["step"]
+            for call in controller.metrics_processor.log.call_args_list
+        ] == logged_steps
+    assert started == started_steps
+
+
+@pytest.mark.parametrize(
+    "start_step, validate_at_step_0, defer_new_if_not_finished, started_steps, logged",
+    [
+        # The validation started at 3 came due at 2; the one started at 6 covers steps 4 and 6.
+        (0, True, True, [0, 3, 6], [(3, "started_0"), (6, "started_3")]),
+        (
+            0,
+            True,
+            False,
+            [0, 2, 4, 6],
+            [(3, "started_0"), (5, "started_2"), (7, "started_4")],
+        ),
+        (0, False, True, [2, 5], [(5, "started_2"), (8, "started_5")]),
+        # Resumed at step 2, a multiple of freq: a validation starts there. validate_at_step_0 is for step 0 only.
+        (2, False, True, [2, 5], [(5, "started_2"), (8, "started_5")]),
+        # Resumed at step 3: the first validation starts at 4, also with validate_at_step_0.
+        (3, True, True, [4, 7], [(7, "started_4")]),
+    ],
+)
+def test_validation_schedule(
+    start_step, validate_at_step_0, defer_new_if_not_finished, started_steps, logged
+) -> None:
+    """freq=2, 8 steps, each validation ends 3 steps after it starts and is logged at that step.
+
+    No validation starts at step 8, the last step.
+    """
+    end_events: dict[int, asyncio.Event] = {}
+
+    async def validate(*, step: int) -> list[m.Metric]:
+        end_events[step] = asyncio.Event()
+        await end_events[step].wait()
+        return [m.Metric(f"started_{step}", m.Mean(1.0))]
+
+    controller = object.__new__(Controller)
+    controller.config = SimpleNamespace(
+        async_loop=SimpleNamespace(
+            num_training_steps=8,
+            validation=ValidationConfig(
+                freq=2,
+                validate_at_step_0=validate_at_step_0,
+                defer_new_if_not_finished=defer_new_if_not_finished,
+            ),
+        )
+    )
+    controller._validation_tasks = []
+    controller._has_pending_validation = False
+    controller.validate = validate
+    controller.metrics_processor = Mock()
+
+    async def run_steps() -> None:
+        for step in range(start_step, 9):
+            if step - 3 in end_events:
+                end_events[step - 3].set()
+                await asyncio.sleep(0)  # the validation returns
+            controller._maybe_start_validation(step=step)
+            await asyncio.sleep(0)  # a new validation starts
+
+    asyncio.run(run_steps())
+
+    assert list(end_events) == started_steps
+    assert [
+        (call.kwargs["step"], call.kwargs["metrics"][0].key)
+        for call in controller.metrics_processor.log.call_args_list
+    ] == logged
+
+
+def test_validation_renames_turn_metrics_and_uses_fresh_group_ids() -> None:
+    """Validation prefixes its turns' metrics with `validation_` (`generator/x` -> `validation_generator/x`,
+    `math_verify/x` -> `validation_math_verify/x`). Two validations never share a group id."""
+
+    async def run_group_rollouts(*, group_id: int, **kwargs) -> RolloutGroup:
+        turn = RolloutTurn(
+            rollout_id=RolloutTurnID(group_id=group_id, rollout_id=0, turn_id=0),
+            prompt_prefix_len=0,
+            prompt_delta_token_ids=np.array([1], dtype=np.int32),
+            completion_token_ids=np.array([2], dtype=np.int32),
+            completion_logprobs=np.array([-0.1], dtype=np.float32),
+            min_policy_version=0,
+            max_policy_version=0,
+            metrics=[
+                m.Metric("generator/queue_time_ms", m.Mean(2.0)),
+                m.Metric("math_verify/timeouts", m.Sum(1.0)),
+            ],
+        )
+        rollout = Rollout(
+            group_id=group_id,
+            rollout_id=0,
+            status=RolloutStatus.COMPLETED,
+            reward=0.0,
+            turns=[turn],
+        )
+        return RolloutGroup(group_id=group_id, rollouts=[rollout])
+
+    controller = object.__new__(Controller)
+    controller._validation_group_ids = itertools.count(start=-1, step=-1)
+    controller._make_generate_fn = lambda: None
+    controller._make_release_session_fn = lambda: None
+    controller._rollouter = SimpleNamespace(run_group_rollouts=run_group_rollouts)
+    release_groups = AsyncMock()
+    controller.generator_router = SimpleNamespace(
+        release_groups=SimpleNamespace(call_one=release_groups)
+    )
+
+    async def run_two_validations() -> list[m.Metric]:
+        for step in (0, 2):
+            _, metrics = await controller._collect_validation_rollouts(
+                samples=["prompt 1", "prompt 2"], sampling=SamplingConfig(), step=step
+            )
+        return metrics
+
+    keys = m.MetricsProcessor._aggregate_metrics(asyncio.run(run_two_validations()))
+    assert [call.args[0] for call in release_groups.call_args_list] == [
+        [-1, -2],
+        [-3, -4],
+    ]
+    assert keys["validation_generator/queue_time_ms/mean"] == 2.0
+    assert keys["validation_math_verify/timeouts/sum"] == 2.0
+    assert "generator/queue_time_ms/mean" not in keys
+    assert "math_verify/timeouts/sum" not in keys

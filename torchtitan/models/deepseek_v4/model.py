@@ -10,21 +10,19 @@ from typing import cast, TYPE_CHECKING
 import spmd_types as spmd
 import torch
 import torch_remat as remat
-from torch import nn
 
-from torchtitan.config import TORCH_DTYPE_MAP, TrainingConfig
+from torchtitan.config import PrecisionConfig, TORCH_DTYPE_MAP
 from torchtitan.config.parallelism import ParallelismConfig
+from torchtitan.distributed.local_compile import LocalCompileConfig
 from torchtitan.distributed.parallelism_context import ParallelismContext
-from torchtitan.models.base.module import ModuleList
+from torchtitan.models.base.model import FlopsEstimator
+from torchtitan.models.base.module import Module, ModuleList
 from torchtitan.models.common.attention import (
     AttentionMetadataMap,
     VarlenAttentionMetadata,
 )
 from torchtitan.models.common.decoder import Decoder, TransformerBlock
-from torchtitan.models.common.flops import (
-    get_nparams_and_active_nparams,
-    quadratic_attention_flops_per_token,
-)
+from torchtitan.models.common.moe import MoE
 from torchtitan.models.deepseek_v3.mtp import (
     apply_fsdp_to_mtp_decoder,
     roll_mtp_sequence,
@@ -34,7 +32,7 @@ from .mhc import HcHead, HcPost, HcPre
 from .state_dict_adapter import DeepSeekV4StateDictAdapter
 
 if TYPE_CHECKING:
-    from .attention import Attention
+    from .attention import DeepSeekV4Attention
     from .mtp import MTPBlock
 
 
@@ -43,7 +41,7 @@ class DeepSeekV4TransformerBlock(TransformerBlock):
 
     @dataclass(kw_only=True, slots=True)
     class Config(TransformerBlock.Config):
-        attention: "Attention.Config"  # pyrefly: ignore [bad-override]
+        attention: "DeepSeekV4Attention.Config"  # pyrefly: ignore [bad-override]
         hc_attn_pre: HcPre.Config
         hc_ffn_pre: HcPre.Config
         hc_post: HcPost.Config
@@ -55,15 +53,7 @@ class DeepSeekV4TransformerBlock(TransformerBlock):
         self.attention = cfg.attention.build()
         self.attention_norm = cfg.attention_norm.build()
         self.ffn_norm = cfg.ffn_norm.build()
-        if cfg.moe is not None:
-            assert cfg.moe is not None
-            self.moe = cfg.moe.build()
-            self.moe_enabled = True
-        else:
-            assert cfg.feed_forward is not None
-            self.moe = None
-            self.feed_forward = cfg.feed_forward.build()
-            self.moe_enabled = False
+        self.feed_forward = cfg.feed_forward.build()
 
         self.hc_attn_pre = cfg.hc_attn_pre.build()
         self.hc_ffn_pre = cfg.hc_ffn_pre.build()
@@ -93,24 +83,29 @@ class DeepSeekV4TransformerBlock(TransformerBlock):
         """
         residual = x
         x, post, comb = self.hc_attn_pre(x)
-        x = self.attention(self.attention_norm(x), attention_metadata, positions)
+        x = self.attention(
+            self.attention_norm(x),
+            attention_metadata,
+            positions,
+            aux_loss_denominator=aux_loss_denominator,
+            padding_mask=padding_mask,
+        )
         # hc_post reads the attention output (wo_b projection) with bare ops.
         remat.recompute_needs_tensor(x)
         x = self.hc_post(x, residual, post, comb)
         residual = x
         x, post, comb = self.hc_ffn_pre(x)
-        if self.moe_enabled:
-            assert self.moe is not None
+        if isinstance(self.feed_forward, MoE):
             ffn_input = self.ffn_norm(x)
-            if getattr(self.moe.router, "hash", False):
-                x = self.moe(
+            if getattr(self.feed_forward.router, "hash", False):
+                x = self.feed_forward(
                     ffn_input,
                     padding_mask_T=padding_mask,
                     aux_loss_denominator=aux_loss_denominator,
                     input_ids_T=input_ids_T,
                 )
             else:
-                x = self.moe(
+                x = self.feed_forward(
                     ffn_input,
                     padding_mask_T=padding_mask,
                     aux_loss_denominator=aux_loss_denominator,
@@ -128,19 +123,23 @@ class DeepSeekV4Model(Decoder):
 
     """DeepSeek V4 decoder model with HC branches and sparse attention."""
 
+    mtp_layers: "ModuleList[MTPBlock]"
+
     @classmethod
     def _register_optimizer_hooks(
         cls, optimizers, model_parts, parallelism_context
     ) -> None:
+        from torchtitan.models.common.aux_loss import register_aux_loss_zero_hook
         from torchtitan.models.common.moe import register_moe_load_balancing_hook
 
         register_moe_load_balancing_hook(optimizers, model_parts, parallelism_context)
+        register_aux_loss_zero_hook(optimizers, model_parts, parallelism_context)
 
     def _apply_fsdp(
         self,
         *,
         parallelism_context: ParallelismContext,
-        training: TrainingConfig,
+        precision: PrecisionConfig,
         parallelism: ParallelismConfig,
     ) -> None:
         from torchtitan.distributed.fsdp import (
@@ -155,28 +154,34 @@ class DeepSeekV4Model(Decoder):
             # this helper, but uses its own MTP implementation.
             self,  # pyrefly: ignore [bad-argument-type]
             dp_mesh,
-            param_dtype=TORCH_DTYPE_MAP[training.mixed_precision_param],
-            reduce_dtype=TORCH_DTYPE_MAP[training.mixed_precision_reduce],
+            param_dtype=TORCH_DTYPE_MAP[precision.param_dtype],
+            reduce_dtype=TORCH_DTYPE_MAP[precision.reduce_dtype],
             pp_enabled=parallelism_context.pp_enabled,
-            cpu_offload=training.enable_cpu_offload,
+            cpu_offload=parallelism.fsdp_enable_cpu_offloading,
             reshard_after_forward_policy=parallelism.fsdp_reshard_after_forward,
             ep_degree=parallelism_context.ep,
             edp_mesh=edp_mesh,
             dp_mesh_dims=dp_mesh_dims,
             edp_mesh_dims=edp_mesh_dims,
             symm_mem_scope=parallelism.fsdp_symm_mem_scope,
+            unshard_in_current_stream=parallelism.fsdp_unshard_in_current_stream,
         )
 
     @dataclass(kw_only=True, slots=True)
     class Config(Decoder.Config):
         dim: int
         vocab_size: int
-        local_compile_regions: list[str] = field(
-            default_factory=lambda: [
-                "loss",
-                "fused_binary_activation",
-                "fp32_to_bf16_split",
-            ]
+        # pyrefly: ignore [bad-override]
+        layers: list[DeepSeekV4TransformerBlock.Config]
+        local_compile: LocalCompileConfig = field(
+            default_factory=lambda: LocalCompileConfig(
+                regions=[
+                    "loss",
+                    "fused_binary_activation",
+                    "fp32_to_bf16_split",
+                    "rope",
+                ]
+            )
         )
         hc_mult: int = 4
         n_mtp_layers: int = 0
@@ -186,55 +191,33 @@ class DeepSeekV4Model(Decoder):
         hc_head: HcHead.Config
         mtp_layers: list["MTPBlock.Config"] | None = None
 
-        def get_nparams_and_flops(
-            self, model: nn.Module, seq_len: int
-        ) -> tuple[int, int]:
-            """Estimate DeepSeek V4 training FLOPs from the final model config."""
-            deepseek_v4_model = cast(DeepSeekV4Model, model)
-            nparams, active_nparams = get_nparams_and_active_nparams(deepseek_v4_model)
-
-            attention_op_flops = 0
-            for layers in (self.layers, self.mtp_layers or ()):
-                for layer in layers:
-                    attention = layer.attention
-                    inner_attention = attention.inner_attention
-                    attention_op_flops += quadratic_attention_flops_per_token(
-                        num_heads=attention.n_heads,
-                        qk_head_dim=attention.head_dim,
-                        v_head_dim=attention.head_dim,
-                        seq_len=seq_len,
-                        sliding_window_size=inner_attention.window_size,
-                    )
-
-                    if attention.compress_ratio > 1:
-                        compressed_seq_len = seq_len // attention.compress_ratio
-                        if attention.compress_ratio == 4:
-                            attention_op_flops += (
-                                6
-                                * attention.index_n_heads
-                                * attention.index_head_dim
-                                * compressed_seq_len
-                            )
-                            compressed_seq_len = min(
-                                compressed_seq_len, inner_attention.index_topk
-                            )
-                        attention_op_flops += quadratic_attention_flops_per_token(
-                            num_heads=attention.n_heads,
-                            qk_head_dim=attention.head_dim,
-                            v_head_dim=attention.head_dim,
-                            seq_len=compressed_seq_len,
-                        )
-
-            active_nparams += len(deepseek_v4_model.mtp_layers) * sum(
-                param.numel() for param in deepseek_v4_model.lm_head.parameters()
+        def build_flops_estimator(
+            self,
+            model: Module,
+            *,
+            seq_len: int,
+            excluded_submodules: tuple[Module | None, ...] = (),
+        ) -> FlopsEstimator:
+            decoder_estimate = super(
+                DeepSeekV4Model.Config, self
+            ).build_flops_estimator(
+                model, seq_len=seq_len, excluded_submodules=excluded_submodules
             )
-            active_nparams += (self.hc_mult - 1) * sum(
-                param.numel()
-                for mtp_layer in deepseek_v4_model.mtp_layers
-                for param in cast("MTPBlock", mtp_layer).h_proj.parameters()
+            model = cast(DeepSeekV4Model, model)
+            repeated_mtp_flops_per_token = 6 * (
+                len(model.mtp_layers)
+                * sum(p.numel() for p in model.lm_head.parameters())
+                + (self.hc_mult - 1)
+                * sum(
+                    p.numel()
+                    for layer in model.mtp_layers
+                    for p in layer.h_proj.parameters()
+                )
             )
-
-            return nparams, 6 * active_nparams + attention_op_flops
+            return lambda input_dict: (
+                decoder_estimate(input_dict)
+                + repeated_mtp_flops_per_token * input_dict["input"].numel()
+            )
 
     def __init__(self, config: Config):
         from torchtitan.distributed.spmd_types import spmd_mesh_size
@@ -301,9 +284,7 @@ class DeepSeekV4Model(Decoder):
             layer_attention_metadata = (
                 None
                 if attention_metadata is None
-                else attention_metadata.get(
-                    cast(TransformerBlock, layer).attention.attention_metadata_key
-                )
+                else attention_metadata.get(type(layer.attention.inner_attention))
             )
             h = layer(
                 h,
@@ -358,9 +339,7 @@ class DeepSeekV4Model(Decoder):
             layer_attention_metadata = (
                 None
                 if attention_metadata is None
-                else attention_metadata.get(
-                    cast(TransformerBlock, mtp_block).attention.attention_metadata_key
-                )
+                else attention_metadata.get(type(mtp_block.attention.inner_attention))
             )
             with spmd.no_typecheck():
                 aux_loss_denominator = (

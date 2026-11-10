@@ -8,11 +8,12 @@
 
 import random
 
+import numpy as np
 import torch
-
-from torchtitan.rl.components.batcher import Batcher
-from torchtitan.rl.components.training_sample_builder import TrainingSample
 from torchtitan.rl.rollout.types import RolloutTurnID
+
+from torchtitan.rl.trainer.batcher import Batcher
+from torchtitan.rl.trainer.training_sample_builder import TrainingSample
 
 
 def _make_samples(lengths: list[int]) -> list[TrainingSample]:
@@ -21,10 +22,10 @@ def _make_samples(lengths: list[int]) -> list[TrainingSample]:
             min_policy_version=0,
             max_policy_version=0,
             rollout_id=RolloutTurnID(group_id=0, rollout_id=index, turn_id=0),
-            token_ids=list(range(length + 1)),
-            loss_mask=[False] + [True] * length,
-            logprobs=[0.0] * (length + 1),
-            advantage=[0.0] * (length + 1),
+            token_ids=np.arange(length + 1),
+            loss_mask=np.array([False] + [True] * length),
+            logprobs=np.zeros(length + 1, dtype=np.float32),
+            advantage=np.zeros(length + 1, dtype=np.float32),
         )
         for index, length in enumerate(lengths)
     ]
@@ -231,6 +232,30 @@ def test_microbatch_carries_the_sampling_temperature_into_the_loss() -> None:
     )
     microbatch = batcher._pack_training_samples(_make_samples([3]))
 
-    temperature = microbatch.loss_kwargs()["temperature"]
+    temperature = microbatch.as_input_dict()["loss_kwargs"]["temperature"]
     assert temperature.dtype == torch.float32
     assert temperature.tolist() == [0.5] * 8
+
+
+def test_microbatch_moves_loss_kwargs_with_the_model_inputs() -> None:
+    batcher = Batcher.Config().build(
+        num_tokens_per_microbatch_per_dp_rank=8,
+        max_context_length=8,
+        num_prompts_per_train_step=1,
+        dp_degree=1,
+        pad_id=0,
+        temperature=1.0,
+    )
+    microbatch = batcher._pack_training_samples(_make_samples([3]))
+
+    input_dict = microbatch.to_input_dict("meta")
+
+    assert input_dict["input"].device.type == "meta"
+    assert set(input_dict["loss_kwargs"]) == {
+        "generator_logprobs",
+        "temperature",
+        "loss_mask",
+        "advantages",
+    }
+    for value in input_dict["loss_kwargs"].values():
+        assert value.device.type == "meta"

@@ -18,16 +18,19 @@ from torchtitan.models.qwen3_5.flavors import (
     _debugmodel_moe,
     Qwen35Model,
     QWEN3_5_SPECIAL_TOKENS,
+    QWEN3_5_VISION_PROCESSOR_KWARGS,
 )
 
 __all__ = [
     "build_model_config",
     "QWEN3_6_SPECIAL_TOKENS",
+    "QWEN3_6_VISION_PROCESSOR_KWARGS",
     "Qwen35Model",
     "MODEL_FLAVORS",
 ]
 
 QWEN3_6_SPECIAL_TOKENS = dict(QWEN3_5_SPECIAL_TOKENS)
+QWEN3_6_VISION_PROCESSOR_KWARGS = dict(QWEN3_5_VISION_PROCESSOR_KWARGS)
 
 MODEL_FLAVORS = {
     "debugmodel": (_debugmodel, 4096),
@@ -42,7 +45,7 @@ def build_model_config(
     *,
     parallelism: ParallelismConfig,
     seq_len: int | None = None,
-    attn_backend: str = "flex",
+    attn_backend: str = "varlen",
     converters: list[ModelConfigConverter.Config] | None = None,
 ) -> Qwen35Model.Config:
     get_config, max_context_len = MODEL_FLAVORS[flavor]
