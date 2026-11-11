@@ -185,6 +185,7 @@ def test_pp_forward_backward_microbatch_group_returns_sentinel_without_last_stag
                 activate_spmd=lambda **kwargs: contextlib.nullcontext(),
             ),
             config=SimpleNamespace(
+                loss_reduce_dtype="float32",
                 debug=SimpleNamespace(spmd_typechecking=False),
             ),
             device=torch.device("cpu"),
@@ -203,8 +204,10 @@ def test_pp_forward_backward_microbatch_group_returns_sentinel_without_last_stag
     assert loss_metrics == [{}]
 
 
+@pytest.mark.parametrize("loss_reduce_dtype", ["float32", "float64"])
 def test_pp_forward_backward_microbatch_group_releases_consumed_loss_graphs(
     monkeypatch,
+    loss_reduce_dtype: str,
 ) -> None:
     activation_refs: list[weakref.ReferenceType[torch.Tensor]] = []
     loss_refs: list[weakref.ReferenceType[torch.Tensor]] = []
@@ -237,6 +240,7 @@ def test_pp_forward_backward_microbatch_group_releases_consumed_loss_graphs(
                 activate_spmd=lambda **kwargs: contextlib.nullcontext(),
             ),
             config=SimpleNamespace(
+                loss_reduce_dtype=loss_reduce_dtype,
                 debug=SimpleNamespace(spmd_typechecking=False),
             ),
             device=torch.device("cpu"),
@@ -250,7 +254,9 @@ def test_pp_forward_backward_microbatch_group_releases_consumed_loss_graphs(
         loss_kwargs=[{"global_loss_token_counts": torch.tensor(2)}] * 2,
     )
 
-    torch.testing.assert_close(reporting_loss, torch.tensor(5.0))
+    torch.testing.assert_close(
+        reporting_loss, torch.tensor(5.0, dtype=getattr(torch, loss_reduce_dtype))
+    )
     assert loss_metrics == [
         {"loss/mean": torch.tensor(1.0)},
         {"loss/mean": torch.tensor(2.0)},
@@ -372,6 +378,7 @@ def test_pp_forward_backward_copies_global_counts_and_nests_metrics() -> None:
     engine = cast(
         TrainingEngine,
         SimpleNamespace(
+            config=SimpleNamespace(loss_reduce_dtype="float32"),
             parallelism_context=SimpleNamespace(
                 pp_enabled=True,
                 dp_replicate_enabled=False,
@@ -444,6 +451,7 @@ def test_forward_backward_runs_whole_accumulation(
         activate_spmd=contextlib.nullcontext,
     )
     engine.config = SimpleNamespace(
+        loss_reduce_dtype="float32",
         parallelism=SimpleNamespace(
             fsdp_defer_gradient_reduction=False,
             fsdp_reshard_after_forward="default",
@@ -1495,6 +1503,7 @@ def _run_forward_backward_recording_all_reduce(
     engine = cast(
         TrainingEngine,
         SimpleNamespace(
+            config=SimpleNamespace(loss_reduce_dtype="float32"),
             parallelism_context=SimpleNamespace(
                 pp_enabled=False,
                 dp_replicate_enabled=dp_replicate_enabled,
@@ -1542,6 +1551,7 @@ def test_pp_hsdp_skips_replicate_all_reduce_until_last_accum_group(
     engine = cast(
         TrainingEngine,
         SimpleNamespace(
+            config=SimpleNamespace(loss_reduce_dtype="float32"),
             parallelism_context=SimpleNamespace(
                 pp_enabled=True,
                 dp_replicate_enabled=True,
@@ -1580,6 +1590,7 @@ def test_fsdp_gradient_accumulation_reduction_policy(
     engine = cast(
         TrainingEngine,
         SimpleNamespace(
+            config=SimpleNamespace(loss_reduce_dtype="float32"),
             parallelism_context=SimpleNamespace(
                 pp_enabled=False,
                 dp_replicate_enabled=False,
@@ -1648,6 +1659,7 @@ def test_pp_lazy_preprocessing_prepares_each_group_before_its_step() -> None:
             preprocess_inputs_kwargs={},
             ntokens_seen=0,
             config=SimpleNamespace(
+                loss_reduce_dtype="float32",
                 parallelism=None,
                 training=SimpleNamespace(num_tokens_per_microbatch_per_dp_rank=1),
             ),
@@ -1694,6 +1706,7 @@ def test_pp_gradient_accumulation_finalization_policy(
     engine = cast(
         TrainingEngine,
         SimpleNamespace(
+            config=SimpleNamespace(loss_reduce_dtype="float32"),
             parallelism_context=SimpleNamespace(
                 pp_enabled=True,
                 dp_replicate_enabled=False,
@@ -1715,3 +1728,49 @@ def test_pp_gradient_accumulation_finalization_policy(
         call.kwargs["finalize_gradients"] for call in pp_forward_backward.call_args_list
     ] == expected_finalize_gradients
     assert loss_metrics == [[{}], [{}]]
+
+
+@pytest.mark.parametrize("engine_cls", [TrainingEngine, GraphTrainingEngine])
+@pytest.mark.parametrize(
+    ("loss_reduce_dtype", "expected"), [("float32", 0.0), ("float64", 1.0)]
+)
+def test_reporting_loss_dtype_preserves_small_losses_and_backward(
+    engine_cls, loss_reduce_dtype: str, expected: float
+) -> None:
+    parameter = torch.tensor(0.0, requires_grad=True)
+    values = iter(enumerate((2**24, 1, -(2**24))))
+
+    def forward_backward(**kwargs):
+        index, value = next(values)
+        loss = parameter * (index + 1) + value
+        loss.backward()
+        return loss
+
+    def pp_forward_backward(**kwargs):
+        return forward_backward(), [{}]
+
+    engine = SimpleNamespace(
+        config=SimpleNamespace(loss_reduce_dtype=loss_reduce_dtype),
+        parallelism_context=SimpleNamespace(
+            pp_enabled=False, dp_replicate_enabled=False
+        ),
+        model_parts=[],
+        _non_pp_forward_backward_microbatch=forward_backward,
+        _pp_forward_backward_microbatch_group=pp_forward_backward,
+    )
+    group = (
+        (None, [{}], None)
+        if engine_cls is GraphTrainingEngine
+        else (None, None, {}, {})
+    )
+    reporting_loss, _ = engine_cls._forward_backward_body(
+        engine,
+        [group] * 3,
+        torch.tensor(3),
+        defer_fsdp_gradient_reduction=False,
+    )
+
+    assert reporting_loss.dtype == getattr(torch, loss_reduce_dtype)
+    assert reporting_loss.item() == expected
+    assert not reporting_loss.requires_grad
+    assert parameter.grad.item() == 6.0

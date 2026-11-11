@@ -22,6 +22,14 @@ from torchtitan.distributed.batch_invariant import is_in_batch_invariant_mode
 from torchtitan.distributed.local_compile import local_compile
 from torchtitan.distributed.spmd_types import current_spmd_mesh, spmd_mesh_size
 
+
+def sum_detached_losses(
+    losses: list[torch.Tensor], *, dtype: torch.dtype
+) -> torch.Tensor:
+    """Sum reporting losses in ``dtype`` without changing their backward graphs."""
+    return torch.stack([loss.detach() for loss in losses]).to(dtype).sum()
+
+
 # PyTorch's default ignore index for cross-entropy loss
 IGNORE_INDEX = -100
 
