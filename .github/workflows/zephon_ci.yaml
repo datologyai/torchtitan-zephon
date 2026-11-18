@@ -121,11 +121,13 @@ jobs:
         run: python -c "import zephon; print(zephon.__file__)"
       - name: Test Zephon integration
         run: python -m pytest tests/unit_tests/test_zephon_dataloader.py -q -rs
-      - name: Test upstream data and checkpoint contracts
+      - name: Test upstream data, checkpoint, and training contracts
         run: |
           python -m pytest -q -rs \
             tests/unit_tests/cpu/components/data \
             tests/unit_tests/cpu/components/checkpointer \
+            tests/unit_tests/cpu/components/test_loss_reduction.py \
             tests/unit_tests/cpu/components/test_validator.py \
             tests/unit_tests/cpu/components/test_validator_frequency.py \
-            tests/unit_tests/cpu/config/test_config_loader.py
+            tests/unit_tests/cpu/config/test_config_loader.py \
+            tests/unit_tests/cpu/test_trainer.py
