@@ -13,6 +13,7 @@ from typing import Any
 import torch
 
 from torchtitan.components.data.types import TrainingMicrobatch
+from torchtitan.components.loss import sum_detached_losses
 from torchtitan.config import PrecisionConfig, TORCH_DTYPE_MAP
 from torchtitan.distributed.accelerator_graph import (
     accelerator_graphs_supported,
@@ -316,7 +317,9 @@ class GraphTrainingEngine(TrainingEngine):
                 ],
                 finalize_gradients=True,
             )
-            detached_loss = loss.detach()
+            detached_loss = loss.detach().to(
+                TORCH_DTYPE_MAP[self.config.loss_reduce_dtype]
+            )
             if accumulated_loss is None:
                 accumulated_loss = detached_loss.clone()
             else:
@@ -359,9 +362,11 @@ class GraphTrainingEngine(TrainingEngine):
         loss_metrics: list[dict[str, torch.Tensor]] = [{} for _ in loss_kwargs]
         if self.pp_has_last_stage:
             assert losses is not None
-            detached_losses = [loss.detach() for loss in losses]
+            reporting_loss = sum_detached_losses(
+                losses, dtype=TORCH_DTYPE_MAP[self.config.loss_reduce_dtype]
+            ).to(self.device)
             losses.clear()
-            return torch.sum(torch.stack(detached_losses)).to(self.device), loss_metrics
+            return reporting_loss, loss_metrics
         return self._pp_loss_sentinel_on_non_last_stage, loss_metrics
 
     def _page_stashed_forward_backward_body(

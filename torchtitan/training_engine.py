@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from functools import partial
-from typing import Any, cast, NamedTuple, TYPE_CHECKING, TypeAlias
+from typing import Any, cast, Literal, NamedTuple, TYPE_CHECKING, TypeAlias
 
 import spmd_types as spmd
 import torch
@@ -18,7 +18,7 @@ from torch.distributed.fsdp import FSDPModule
 
 from torchtitan.components.checkpointer import BaseCheckpointManager, CheckpointManager
 from torchtitan.components.data.types import TrainingMicrobatch
-from torchtitan.components.loss import ChunkedLossWrapper, Loss
+from torchtitan.components.loss import ChunkedLossWrapper, Loss, sum_detached_losses
 from torchtitan.components.optim import Optim
 from torchtitan.config import Configurable, TORCH_DTYPE_MAP
 from torchtitan.config.configs import (
@@ -149,10 +149,19 @@ class TrainingEngine(Configurable, torch.distributed.checkpoint.stateful.Statefu
         comm: CommConfig = field(default_factory=CommConfig)
         debug: DebugConfig = field(default_factory=DebugConfig)
         loss: Loss.Config = field(default_factory=Loss.Config)
+        loss_reduce_dtype: Literal["float32", "float64"] = "float32"
+        """Dtype for detached training-loss sums and their distributed reduction.
+
+        FP64 reduces topology-dependent rounding in logged losses. This does not
+        change the loss used for backward or the model and optimizer dtypes.
+        """
+
         dist_moe_runtime: Configurable.Config | None = None
         """Optional rank-wide Dist-MoE memory and pipeline-slot policy."""
 
         def __post_init__(self) -> None:
+            if self.loss_reduce_dtype not in ("float32", "float64"):
+                raise ValueError("loss_reduce_dtype must be 'float32' or 'float64'.")
             if (
                 self.debug.spmd_typechecking
                 and self.parallelism.pipeline_parallel_degree > 1
@@ -834,7 +843,9 @@ class TrainingEngine(Configurable, torch.distributed.checkpoint.stateful.Statefu
                 )
                 group_loss_metrics = [self.loss_metrics]
 
-            detached_loss = loss.detach()
+            detached_loss = loss.detach().to(
+                TORCH_DTYPE_MAP[self.config.loss_reduce_dtype]
+            )
             if accumulated_loss is None:
                 accumulated_loss = detached_loss.clone()
             else:
@@ -911,9 +922,11 @@ class TrainingEngine(Configurable, torch.distributed.checkpoint.stateful.Statefu
 
         if self.pp_has_last_stage:
             assert losses is not None
-            detached_losses = [loss.detach() for loss in losses]
+            reporting_loss = sum_detached_losses(
+                losses, dtype=TORCH_DTYPE_MAP[self.config.loss_reduce_dtype]
+            ).to(self.device)
             losses.clear()
-            return torch.sum(torch.stack(detached_losses)).to(self.device), loss_metrics
+            return reporting_loss, loss_metrics
         return self._pp_loss_sentinel_on_non_last_stage, loss_metrics
 
     @sl.log_trace_span("optim_step")
