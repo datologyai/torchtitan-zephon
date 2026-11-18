@@ -118,9 +118,11 @@ class PrecisionConfig:
     and no other parallelism is enabled, i.e. under DDP or single-device training.
     """
 
-    reduce_dtype: Literal["bfloat16", "float32"] = "float32"
+    reduce_dtype: Literal["bfloat16", "float32", "float64"] = "float32"
     """
     torch dtype to use for reductions when applying mixed precision via FSDP.
+    FP64 is opt-in for topology-sensitive gradient sums. FSDP2 also uses the
+    reduction dtype to retain gradients while synchronization is disabled.
     This feature only takes effect when data_parallel_shard_degree > 1
     """
 
